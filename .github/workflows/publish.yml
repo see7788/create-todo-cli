@@ -24,22 +24,55 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org/
+          cache: 'pnpm'
 
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: Build
-        run: pnpm run build
-
-      - name: Publish package
+      - name: Publish packages
         run: |
-          PACKAGE_NAME=$(node -p "require('./package.json').name")
-          LOCAL_VERSION=$(node -p "require('./package.json').version")
-          REMOTE_VERSION=$(npm view "$PACKAGE_NAME" version 2>/dev/null || true)
+          ROOT_NAME=$(node -p "require('./package.json').name")
+          PACKAGES=$(node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
 
-          if [ -n "$REMOTE_VERSION" ] && ! npx --yes semver "$LOCAL_VERSION" -r ">$REMOTE_VERSION" >/dev/null; then
-            echo "Skipping $PACKAGE_NAME: local $LOCAL_VERSION <= npm $REMOTE_VERSION"
-            exit 0
-          fi
+          const libsDir = path.join(process.cwd(), 'libs');
+          const packages = fs.readdirSync(libsDir, { withFileTypes: true })
+            .filter((item) => item.isDirectory())
+            .flatMap((item) => {
+              const packagePath = path.join(libsDir, item.name, 'package.json');
+              if (!fs.existsSync(packagePath)) return [];
 
-          npm publish --access public
+              const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+              const isPublic = pkg.private !== true && pkg.publishConfig?.access === 'public';
+
+              return pkg.name.endsWith('lib') && isPublic ? [item.name] : [];
+            });
+
+          process.stdout.write(packages.join(' '));
+          NODE
+          )
+
+          for pkg in $PACKAGES; do
+            package_name="@see7788/$ROOT_NAME-$pkg"
+            local_version=$(node -p "require('./libs/$pkg/package.json').version")
+            remote_version=$(npm view "$package_name" version 2>/dev/null || true)
+
+            if [ -n "$remote_version" ]; then
+              if ! npx --yes semver "$local_version" -r ">$remote_version" >/dev/null; then
+                echo "Skipping $package_name: local $local_version <= npm $remote_version"
+                continue
+              fi
+            fi
+
+            echo "Publishing $package_name@$local_version..."
+            cd libs/$pkg
+
+            npm pkg set name="$package_name" 2>&1 || echo "Failed to update name, continuing..."
+            npm pkg set publishConfig.name="$package_name" 2>&1 || echo "Failed to update publishConfig, continuing..."
+
+            echo "Publishing as: $package_name"
+            npm publish --access public 2>&1 || echo "Package already published or failed, continuing..."
+
+            cd ../../
+          done

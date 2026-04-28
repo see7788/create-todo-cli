@@ -7,6 +7,7 @@ declare class ProjectTemplateCreator {
     private templatesIndex;
     /**本地项目路径 */
     private localProjectPath;
+    private targetCreated;
     /**目标目录路径 - 动态计算项目创建的完整目标目录绝对路径，用于模板克隆和文件操作 */
     private get targetPath();
     /**执行项目创建工作流 - 编排各个业务步骤的具体执行*/
@@ -27,9 +28,26 @@ declare class ProjectTemplateCreator {
     private copyDirectory;
     /**用degit创建项目*/
     private createFromdegit;
-    private githubpublishFileAdd;
-    /**更新package.json中的name字段*/
-    private packageJsonNameSet;
+    private projectIdentitySet;
+    private pnpmRootSetupAsk;
+    private publishWorkflowAsk;
+    private publishWorkflowCreate;
+    private readmeIdentitySet;
+    private pnpmWorkspaceFileSet;
+    private npmrcSet;
+    private gitignoreSet;
+    private rootPackageJsonSet;
+    private linesFileEnsure;
+    private isPnpmWorkspaceRoot;
+    private packageManagerGet;
+    private repositoryUrlGet;
+    private currentGitHubRepoGet;
+    private parseGitHubRepo;
+    private githubLoginGet;
+    private gitConfigGet;
+    private commandGet;
+    private readJsonFile;
+    private writeJsonFile;
     /**清理失败的项目目录 - 仅在有目标目录时执行*/
     private targetPathDEl;
 }

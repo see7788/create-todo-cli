@@ -2,10 +2,11 @@
 import * as fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { execSync } from 'child_process';
 import prompts from 'prompts';
 import degit from 'degit';
 import { Appexit } from "./tool.js";
-import DistPackageBuilder from "./dist2.js";
+import DistPackageBuilder from "./dist.js";
 class ProjectTemplateCreator {
     /**模板列表*/
     templates = [
@@ -19,6 +20,7 @@ class ProjectTemplateCreator {
     templatesIndex;
     /**本地项目路径 */
     localProjectPath = '';
+    targetCreated = false;
     /**目标目录路径 - 动态计算项目创建的完整目标目录绝对路径，用于模板克隆和文件操作 */
     get targetPath() {
         return path.resolve(this.validProjectName);
@@ -40,20 +42,23 @@ class ProjectTemplateCreator {
             else {
                 await this.createFromdegit();
             }
-            console.log('📦 4. githubpublishFile');
-            await this.githubpublishFileAdd();
-            console.log('✏️  5. packageJsonNameSet');
-            await this.packageJsonNameSet();
+            this.targetCreated = true;
+            console.log('✏️  4. 重写项目身份信息');
+            const identity = await this.projectIdentitySet();
+            console.log('🧩 5. pnpm 根配置');
+            await this.pnpmRootSetupAsk();
+            console.log('🚚 6. 发布配置');
+            await this.publishWorkflowAsk(identity);
             console.log('\n🎉 完成项目创建流程');
             console.log(`📁 模板路径: ${path.resolve(this.targetPath)}`);
             console.log('\n💡 下一步操作:');
             console.log(`   cd ${this.validProjectName}`);
             console.log('   pnpm install');
             console.log('   pnpm run dev');
-            console.log('\n📝 发布提示: 已添加GitHub Actions发布配置，请确保在GitHub仓库中设置NODE_AUTH_TOKEN密钥');
         }
         catch (error) {
             await this.targetPathDEl();
+            throw error;
         }
     }
     /**交互确定项目名称*/
@@ -453,43 +458,255 @@ class ProjectTemplateCreator {
         // 完成创建后的提示信息
         console.log('\n✅ 项目创建成功！');
     }
-    async githubpublishFileAdd() {
-        try {
-            // 定义源文件和目标文件路径
-            const srcPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.github/workflows/publish.yml');
-            const destPath = path.join(this.targetPath, '.github', 'workflows', 'publish.yml');
-            // 创建目标目录
-            fs.mkdirSync(path.dirname(destPath), { recursive: true });
-            // 复制文件
-            const config = fs.readFileSync(srcPath, 'utf-8');
-            fs.writeFileSync(destPath, config);
-            console.log('✅ 已添加GitHub Actions发布配置');
+    async projectIdentitySet() {
+        const pkgPath = path.join(this.targetPath, 'package.json');
+        const pkg = this.readJsonFile(pkgPath) ?? {};
+        const sourceRepo = this.parseGitHubRepo(this.repositoryUrlGet(pkg));
+        const currentRepo = this.currentGitHubRepoGet();
+        const githubOwner = currentRepo?.owner ?? this.githubLoginGet();
+        const repositoryName = this.validProjectName;
+        const repositoryUrl = githubOwner ? `https://github.com/${githubOwner}/${repositoryName}.git` : undefined;
+        const homepage = githubOwner ? `https://github.com/${githubOwner}/${repositoryName}` : undefined;
+        const identity = {
+            packageName: this.validProjectName,
+            repositoryName,
+            author: this.gitConfigGet("user.name") ?? pkg.author,
+            githubOwner,
+            repositoryUrl,
+            homepage,
+            bugsUrl: homepage ? `${homepage}/issues` : undefined,
+            license: pkg.license ?? "MIT",
+        };
+        pkg.name = identity.packageName;
+        pkg.author = identity.author;
+        pkg.license = identity.license;
+        if (identity.repositoryUrl) {
+            pkg.repository = { type: "git", url: identity.repositoryUrl };
         }
-        catch (error) {
-            throw new Appexit(`⚠️  添加GitHub Actions配置时出错: ${error.message}`);
+        else {
+            delete pkg.repository;
+        }
+        if (identity.homepage) {
+            pkg.homepage = identity.homepage;
+        }
+        else {
+            delete pkg.homepage;
+        }
+        if (identity.bugsUrl) {
+            pkg.bugs = { url: identity.bugsUrl };
+        }
+        else {
+            delete pkg.bugs;
+        }
+        this.writeJsonFile(pkgPath, pkg);
+        this.readmeIdentitySet(sourceRepo, identity);
+        console.log(`✅ package.json 已更新为当前项目: ${identity.packageName}`);
+        return identity;
+    }
+    async pnpmRootSetupAsk() {
+        if (this.isPnpmWorkspaceRoot(process.cwd())) {
+            console.log("✅ 当前目录已经是 pnpm workspace 根");
+            return;
+        }
+        const response = await prompts({
+            type: "confirm",
+            name: "enabled",
+            message: "当前目录不是 pnpm 根，是否初始化 pnpm workspace 根？",
+            initial: false,
+        });
+        if (response.enabled === undefined) {
+            const error = new Error("user-cancelled");
+            throw error;
+        }
+        if (!response.enabled) {
+            console.log("⏭️ 跳过 pnpm 根初始化");
+            return;
+        }
+        this.pnpmWorkspaceFileSet();
+        this.npmrcSet();
+        this.gitignoreSet();
+        this.rootPackageJsonSet();
+        console.log("✅ pnpm workspace 根配置已补齐");
+    }
+    async publishWorkflowAsk(identity) {
+        const response = await prompts({
+            type: "confirm",
+            name: "enabled",
+            message: "是否为当前项目创建 GitHub Actions publish.yml？",
+            initial: false,
+        });
+        if (response.enabled === undefined) {
+            const error = new Error("user-cancelled");
+            throw error;
+        }
+        if (!response.enabled) {
+            console.log("⏭️ 跳过 publish.yml");
+            return;
+        }
+        const workflowPath = path.join(this.targetPath, ".github", "workflows", "publish.yml");
+        fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
+        fs.writeFileSync(workflowPath, this.publishWorkflowCreate(identity), "utf-8");
+        console.log(`✅ 已创建 ${path.relative(this.targetPath, workflowPath)}`);
+    }
+    publishWorkflowCreate(identity) {
+        const packageManager = this.packageManagerGet();
+        return `name: Publish ${identity.packageName}
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${packageManager}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm run build --if-present
+      - run: pnpm publish --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}
+`;
+    }
+    readmeIdentitySet(sourceRepo, identity) {
+        const readmePath = path.join(this.targetPath, "README.md");
+        if (!fs.existsSync(readmePath)) {
+            return;
+        }
+        let content = fs.readFileSync(readmePath, "utf-8");
+        if (sourceRepo && identity.githubOwner) {
+            content = content.replaceAll(`github.com/${sourceRepo.owner}/${sourceRepo.repo}`, `github.com/${identity.githubOwner}/${identity.repositoryName}`);
+            content = content.replaceAll(`${sourceRepo.owner}/${sourceRepo.repo}`, `${identity.githubOwner}/${identity.repositoryName}`);
+        }
+        content = content.replaceAll(/name:\s*["']?[^"'\n]+["']?/gi, `name: ${identity.packageName}`);
+        fs.writeFileSync(readmePath, content, "utf-8");
+    }
+    pnpmWorkspaceFileSet() {
+        const filePath = path.join(process.cwd(), "pnpm-workspace.yaml");
+        if (fs.existsSync(filePath)) {
+            return;
+        }
+        fs.writeFileSync(filePath, `packages:
+  - "libs/*"
+  - "apps/*"
+`, "utf-8");
+    }
+    npmrcSet() {
+        this.linesFileEnsure(path.join(process.cwd(), ".npmrc"), ["store-dir=./.pnpm-store"]);
+    }
+    gitignoreSet() {
+        this.linesFileEnsure(path.join(process.cwd(), ".gitignore"), [
+            ".pnpm-store/**",
+            "**/node_modules/**",
+            "**/dist/**",
+            "**/**_bak/",
+            "**/**.bak",
+        ]);
+    }
+    rootPackageJsonSet() {
+        const filePath = path.join(process.cwd(), "package.json");
+        const pkg = this.readJsonFile(filePath) ?? {
+            name: path.basename(process.cwd()),
+            version: "1.0.0",
+            private: true,
+        };
+        pkg.private = true;
+        pkg.workspaces = Array.from(new Set([...(pkg.workspaces ?? []), "libs", "apps"]));
+        pkg.pnpm = {
+            ...(pkg.pnpm ?? {}),
+            overrides: {
+                ...(pkg.pnpm?.overrides ?? {}),
+                tsx: pkg.pnpm?.overrides?.tsx ?? "^4.20.0",
+                typescript: pkg.pnpm?.overrides?.typescript ?? "^5.8.0",
+            },
+        };
+        this.writeJsonFile(filePath, pkg);
+    }
+    linesFileEnsure(filePath, lines) {
+        const oldLines = fs.existsSync(filePath)
+            ? fs.readFileSync(filePath, "utf-8").split(/\r?\n/).filter(Boolean)
+            : [];
+        const nextLines = Array.from(new Set([...oldLines, ...lines]));
+        fs.writeFileSync(filePath, `${nextLines.join("\n")}\n`, "utf-8");
+    }
+    isPnpmWorkspaceRoot(dirPath) {
+        return fs.existsSync(path.join(dirPath, "pnpm-workspace.yaml"));
+    }
+    packageManagerGet() {
+        const rootPkg = this.readJsonFile(path.join(process.cwd(), "package.json"));
+        const packageManager = rootPkg?.packageManager;
+        if (packageManager?.startsWith("pnpm@")) {
+            return packageManager.slice("pnpm@".length);
+        }
+        return "10";
+    }
+    repositoryUrlGet(pkg) {
+        if (typeof pkg.repository === "string") {
+            return pkg.repository;
+        }
+        return pkg.repository?.url;
+    }
+    currentGitHubRepoGet() {
+        const remote = this.commandGet("git config --get remote.origin.url");
+        return remote ? this.parseGitHubRepo(remote) : undefined;
+    }
+    parseGitHubRepo(value) {
+        const match = value?.match(/github\.com[:/]([^/]+)\/(.+?)(?:\.git)?$/i);
+        if (!match) {
+            return undefined;
+        }
+        return { owner: match[1], repo: match[2] };
+    }
+    githubLoginGet() {
+        return this.commandGet("gh api user --jq .login");
+    }
+    gitConfigGet(key) {
+        return this.commandGet(`git config --get ${key}`);
+    }
+    commandGet(command) {
+        try {
+            const value = execSync(command, { cwd: process.cwd(), encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+            return value || undefined;
+        }
+        catch {
+            return undefined;
         }
     }
-    /**更新package.json中的name字段*/
-    async packageJsonNameSet() {
-        try {
-            const pkgPath = path.join(this.targetPath, 'package.json');
-            const pkgContent = fs.readFileSync(pkgPath, 'utf-8');
-            const pkg = JSON.parse(pkgContent);
-            pkg.name = this.validProjectName;
-            fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2), 'utf-8');
-            console.log(`✏️  package.json name 已更新为: ${this.validProjectName}`);
+    readJsonFile(filePath) {
+        if (!fs.existsSync(filePath)) {
+            return undefined;
         }
-        catch (err) {
-            console.warn('⚠️ 未找到或无法更新 package.json:', err.message);
-        }
+        return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    }
+    writeJsonFile(filePath, value) {
+        fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
     }
     /**清理失败的项目目录 - 仅在有目标目录时执行*/
     async targetPathDEl() {
         try {
-            // 检查目录是否存在
-            if (fs.existsSync(this.targetPath)) {
-                console.log(`🧹 清理失败的项目目录: ${this.targetPath}`);
-                fs.rmSync(this.targetPath, { recursive: true, force: true });
+            if (!this.targetCreated || !this.validProjectName) {
+                return;
+            }
+            const targetPath = this.targetPath;
+            if (targetPath === process.cwd() || targetPath === path.parse(targetPath).root) {
+                return;
+            }
+            if (fs.existsSync(targetPath)) {
+                console.log(`🧹 清理失败的项目目录: ${targetPath}`);
+                fs.rmSync(targetPath, { recursive: true, force: true });
                 console.log(`✅ 目录已清理`);
             }
         }

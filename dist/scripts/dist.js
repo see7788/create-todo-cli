@@ -139,13 +139,9 @@ class DistPackageBuilder extends LibBase {
         console.log("开始提取依赖");
         const imported = new Set();
         for (const key in metafile.inputs) {
-            const segs = key.match(/node_modules[/\\](?:\.pnpm[/\\])?(?:@[^/\\]+[/\\][^/\\]+|[^/\\]+)/g);
-            if (!segs)
-                continue;
-            for (const seg of segs) {
-                const libname = seg.split(/[/\\]/).pop();
-                if (libname)
-                    imported.add(libname);
+            const matches = key.matchAll(/node_modules[/\\](?:\.pnpm[/\\])?((?:@[^/\\]+[/\\][^/\\]+)|[^/\\]+)/g);
+            for (const match of matches) {
+                imported.add(match[1].replace(/@[^/\\]+$/, ""));
             }
         }
         const rootPkg = this.cwdProjectInfo.jsonInfo;

@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import prompts from 'prompts';
 import ProjectTemplateCreator from './scripts/template.js';
-import ReleaseManager from './scripts/release.js';
-import DistPackageBuilder from './scripts/dist2.js';
+import DistPackageBuilder from './scripts/dist.js';
 import { Appexit } from './scripts/tool.js';
 import pkg from '../package.json' with { type: 'json' };
 /**命令行界面类 - 编排层，负责组织和协调各个工具类的使用*/
@@ -22,7 +21,6 @@ class CLI {
             create <?name>   创建新项目
             init <?name>     创建新项目
             template <?name> 创建新项目
-            release          发布新版本
             dist             抽取npm包
       `);
         process.exit(0);
@@ -41,10 +39,6 @@ class CLI {
                 // 编排项目创建流程，使用工具类的create方法 - 延迟实例化
                 await new ProjectTemplateCreator().task1(param);
                 break;
-            case 'release':
-                // 编排版本发布流程，使用工具类的task1方法
-                await new ReleaseManager().task1();
-                break;
             case 'dist':
                 // 编排分发包构建流程，使用工具类的build方法 - 延迟实例化
                 await new DistPackageBuilder().task1();
@@ -61,16 +55,12 @@ class CLI {
             message: '请选择操作',
             choices: [
                 { title: '🆕 创建新项目', value: 'create' },
-                { title: '🚀 发布新版本', value: 'release' },
                 { title: '🎯 抽取 npm 包', value: 'dist' },
             ],
         });
         switch (response.action) {
             case 'create':
                 await new ProjectTemplateCreator().task1();
-                break;
-            case 'release':
-                await new ReleaseManager().task1();
                 break;
             case 'dist':
                 await new DistPackageBuilder().task1();

@@ -1,152 +1,162 @@
 # create-todo-cli
 
-一个功能强大的前端工具集，提供三大核心能力：从模板创建项目、从文件拆出独立项目、自动化版本发布，简化开发全流程。
+用于快速创建 TypeScript 项目、从现有文件拆出独立包，并在创建完成后补齐项目身份信息和可选工程配置。
 
-## 🚀 核心功能
+## 核心能力
 
-### 1️⃣ 从模板创建项目
-- 支持从GitHub仓库或本地项目快速创建新项目
-- 内置多种预设模板，包括TypeScript基础脚手架、Electron应用模板等
-- 交互式选择项目名称、模板类型和配置选项
-- 自动创建GitHub Actions发布配置
+### 创建项目
 
-### 2️⃣ 从文件拆出独立项目
-- 将现有项目中的单个入口文件抽取为完整的npm包
-- 智能分析依赖并生成package.json
-- 自动构建JavaScript和TypeScript声明文件
-- 自定义输出目录名称，灵活适配不同项目结构
+- 从内置 GitHub 模板创建项目
+- 从本地项目或入口文件抽取项目
+- 创建完成后重写 `package.json` 中属于模板作者的信息
+- 根据当前目录环境，可选初始化 pnpm workspace 根
+- 可选创建 GitHub Actions 发布配置
 
-### 3️⃣ 自动化版本发布
-- 一键更新版本号并创建Git标签
-- 自动检查和提交未暂存的更改
-- 推送代码和标签到远程仓库
-- 与GitHub Actions集成，自动发布到 npm
+### 拆出独立包
 
-## 📦 安装与使用
+- 从 `.js`、`.ts`、`.jsx`、`.tsx` 等入口文件分析依赖
+- 生成独立 `package.json`
+- 构建 JavaScript 输出和 TypeScript 声明文件
+- 适合把已有项目中的某个工具、组件或库抽成单独 npm 包
 
-无需全局安装，直接通过包管理器的`create`命令使用：
+## 使用
 
 ```bash
-# 使用pnpm（推荐）
 pnpm create create-todo-cli
-
-# 使用npm
-npm create create-todo-cli
-
-# 使用yarn
-yarn create create-todo-cli
-```
-
-## 📋 详细使用指南
-
-### 1. 从模板创建项目
-
-**直接指定项目名称：**
-```bash
-# 创建名为my-app的项目
 pnpm create create-todo-cli my-app
-```
-
-**交互式创建：**
-```bash
-pnpm create create-todo-cli
-# 或使用create命令
-pnpm create create-todo-cli create
-```
-
-创建流程：
-1. 输入项目名称（自动验证有效性）
-2. 选择模板类型（GitHub模板或本地项目）
-3. 如选择本地项目，通过文件浏览器选择项目路径
-4. 自动生成项目并配置
-
-### 2. 从文件拆出独立项目
-
-在需要拆出文件的项目目录下执行：
-```bash
-# 使用交互式模式
+pnpm create create-todo-cli create my-app
 pnpm create create-todo-cli dist
 ```
 
-拆包流程：
-1. 指定输出目录名称（默认为dist）
-2. 选择入口文件（支持.js, .ts, .jsx, .tsx等）
-3. 自动分析依赖并构建项目
-4. 生成包含JavaScript和TypeScript声明的独立包
+## 创建项目流程
 
-### 3. 自动化版本发布
+```txt
+输入项目名
+选择模板来源
+复制或抽取项目
+重写项目身份信息
+按需初始化 pnpm 根
+按需创建 publish.yml
+输出下一步命令
+```
 
-在项目根目录下执行：
+### 模板来源
+
+- `see7788/ts-template`：TypeScript 基础项目
+- `see7788/electron-template`：Electron 项目
+- 本地项目：从已有项目或入口文件抽取
+
+### 项目身份信息
+
+模板只提供结构，新项目不应继续保留模板作者的仓库、作者和包名信息。
+
+创建完成后会尽量自动推断并改写：
+
+- `package.json` 的 `name`
+- `package.json` 的 `author`
+- `package.json` 的 `repository.url`
+- `package.json` 的 `homepage`
+- `package.json` 的 `bugs.url`
+- README 中明显属于模板仓库的链接
+
+推断来源按优先级使用：
+
+```txt
+当前 git remote origin
+GitHub CLI 当前登录用户
+git config user.name
+目标项目名
+模板 package.json 原值
+```
+
+除非必须确认，创建流程不逐项询问 GitHub 用户名、仓库名、npm scope、author、license 等信息。
+
+## pnpm 根初始化
+
+如果当前目录不是 pnpm workspace 根，创建项目后会询问是否把当前目录初始化为 pnpm 根。
+
+选择后生成或补齐：
+
+- `pnpm-workspace.yaml`
+- `.npmrc`
+- `.gitignore`
+- 根 `package.json`
+
+默认约定：
+
+```yaml
+packages:
+  - "libs/*"
+  - "apps/*"
+```
+
+默认 `.npmrc`：
+
+```txt
+store-dir=./.pnpm-store
+```
+
+默认 `.gitignore` 至少包含：
+
+```txt
+.pnpm-store/**
+**/node_modules/**
+**/dist/**
+**/**_bak/
+**/**.bak
+```
+
+## publish.yml
+
+创建项目时不会默认强制添加发布配置。
+
+如果用户选择创建 `publish.yml`，工具会根据推断出的项目身份生成 GitHub Actions 配置，并尽量避免保留模板作者信息。
+
+发布配置只负责生成工作流文件，不执行发布命令、不创建 Git 标签、不推送远程仓库。
+
+## dist 命令
+
+在需要拆包的项目目录执行：
+
 ```bash
-# 发布新版本
-pnpm create create-todo-cli release
+pnpm create create-todo-cli dist
 ```
 
-发布流程：
-1. 自动递增版本号（patch级别）
-2. 创建对应的 Git 标签
-3. 更新package.json并提交更改
-4. 创建Git标签
-5. 推送到远程仓库并触发 GitHub Actions 发布 npm 包
+流程：
 
-## ⚙️ 支持的模板
-
-- **从本地项目抽取**：从现有项目创建新模板
-- **see7788/ts-template**：TypeScript基础脚手架
-- **see7788/electron-template**：增强型Electron应用模板
-
-## 🛠️ 系统要求
-
-- Node.js >= 18
-- Git（用于版本管理和模板克隆）
-- 任一支持的包管理器：pnpm、npm或yarn
-
-## 🔧 核心依赖
-
-- **degit**：从Git仓库高效克隆模板
-- **prompts**：提供友好的交互式命令行界面
-- **tsup**：零配置TypeScript构建工具
-- **esbuild**：极速JavaScript/TypeScript打包
-
-## 📁 项目结构
-
-```
-src/
-├── index.ts           # 主入口，命令行参数处理
-└── scripts/
-    ├── template.ts    # 模板创建功能
-    ├── dist.ts        # 文件抽取功能
-    ├── release.ts     # 版本发布功能
-    └── tool.ts        # 工具函数
+```txt
+选择入口文件
+选择输出目录
+分析本地依赖和三方依赖
+生成 package.json
+构建 JS 和 d.ts
 ```
 
-## 💻 开发指南
+## 命令
 
-如果您想参与项目开发：
+```txt
+help             显示帮助
+h                显示帮助
+create <?name>   创建新项目
+init <?name>     创建新项目
+template <?name> 创建新项目
+dist             抽取 npm 包
+```
+
+## 开发
 
 ```bash
-# 克隆仓库
-git clone https://github.com/see7788/create-todo-cli.git
-cd create-todo-cli
-
-# 安装依赖
 pnpm install
-
-# 构建项目
 pnpm run build
-
-# 本地测试
 pnpm run dev
 ```
 
-## 📄 许可证
+## 要求
 
-MIT License © 2024 create-todo-cli 项目团队
+- Node.js >= 18
+- pnpm、npm 或 yarn
+- Git，可用于模板克隆和身份信息推断
 
-## 🐛 问题反馈
+## License
 
-如有任何问题或建议，请在 [GitHub Issues](https://github.com/see7788/create-todo-cli/issues) 提交反馈。
-
-## 🤝 贡献
-
-欢迎提交Pull Request来改进本项目。请确保在提交前进行适当的测试。
+MIT
