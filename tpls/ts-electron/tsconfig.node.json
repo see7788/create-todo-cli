@@ -1,0 +1,16 @@
+{
+  "include": [
+    "src/main"
+  ],
+  "files": [
+    "electron.vite.config.ts"
+  ],
+  "compilerOptions": {
+    "composite": true,
+    "strict": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+  }
+}

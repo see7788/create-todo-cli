@@ -1,0 +1,45 @@
+name: Publish to NPM
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      NODE_AUTH_TOKEN: ${{ secrets.JPMJS }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v5
+        with:
+          version: latest
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org/
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Publish package
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          LOCAL_VERSION=$(node -p "require('./package.json').version")
+          REMOTE_VERSION=$(npm view "$PACKAGE_NAME" version 2>/dev/null || true)
+
+          if [ -n "$REMOTE_VERSION" ] && ! npx --yes semver "$LOCAL_VERSION" -r ">$REMOTE_VERSION" >/dev/null; then
+            echo "Skipping $PACKAGE_NAME: local $LOCAL_VERSION <= npm $REMOTE_VERSION"
+            exit 0
+          fi
+
+          npm publish --access public
