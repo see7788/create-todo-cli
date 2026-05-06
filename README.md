@@ -36,6 +36,4 @@ create-todo-cli/
 │        └─ 通用命令、路径、文本工具
 ├─ dist/
 │  └─ TypeScript 编译后的发布产物
-└─ tpls/
-   └─ 本地模板目录
 ```

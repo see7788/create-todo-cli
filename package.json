@@ -11,7 +11,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx ./src/index.ts",
-    "npx": "node dist/index.js"
+    "npx": "node dist/index.js",
+    "demo":"pnpm dlx github:see7788/create-todo-cli"
   },
   "publishConfig": {
     "access": "public"
