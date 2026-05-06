@@ -1,76 +1,74 @@
 #!/usr/bin/env node
 import prompts from 'prompts';
-import ProjectTemplateCreator from './scripts/template.js';
-import DistPackageBuilder from './scripts/dist.js';
-import { Appexit } from './scripts/tool.js';
+import CreatePkg from './scripts/createPkg.js';
+import DistPkg from './scripts/distPkg.js';
+import LibBase, { Appexit } from './scripts/tool.js';
 import pkg from '../package.json' with { type: 'json' };
 
-/**命令行界面类 - 编排层，负责组织和协调各个工具类的使用*/
 class CLI {
-  /**命令行参数*/
   private readonly args: string[];
 
-  /**构造函数 - 初始化命令行参数*/
   constructor() {
     this.args = process.argv.slice(2);
-    console.log("pkg.version:", pkg.version);
+    console.log('pkg.version:', pkg.version);
   }
-  /**显示帮助信息*/
+
   private showHelp(): void {
     console.log(`
-            help             显示帮助
-            h                显示帮助
-            create <?name>   创建新项目
-            init <?name>     创建新项目
-            template <?name> 创建新项目
-            dist             抽取npm包
-      `);
+help                 显示帮助
+createPkg <?name>    创建新项目
+distPkg <?name>      抽取 npm 包
+`);
     process.exit(0);
   }
 
-  /**处理命令行参数 - 编排工具类的使用方式*/
-  private async handleCommand(cmd: string, param: string): Promise<void> {
+  private async handleCommand(cmd?: string, param?: string): Promise<void> {
     switch (cmd) {
       case '--help':
       case '-h':
       case 'help':
         this.showHelp();
         break;
-      case 'create':
-      case 'template':
-      case 'init':
-        // 编排项目创建流程，使用工具类的create方法 - 延迟实例化
-        await new ProjectTemplateCreator().task1(param);
+      case 'createPkg':
+        await new CreatePkg().task1(param);
         break;
-
-      case 'dist':
-        // 编排分发包构建流程，使用工具类的build方法 - 延迟实例化
-        await new DistPackageBuilder().task1();
+      case 'distPkg':
+        await new DistPkg().task1(param);
         break;
       default:
         await this.showInteractiveMenu();
     }
   }
 
-  /**显示交互式菜单 - 用户友好的操作选择界面*/
   private async showInteractiveMenu(): Promise<void> {
     const response = await prompts({
       type: 'select',
       name: 'action',
       message: '请选择操作',
       choices: [
-        { title: '🆕 创建新项目', value: 'create' },
-        { title: '🎯 抽取 npm 包', value: 'dist' },
+        { title: '创建新项目', value: 'createPkg' },
+        { title: '抽取 npm 包', value: 'distPkg' },
+        { title: '重写 package.json 身份信息', value: 'rewritePackageIdentity' },
+        { title: '初始化 pnpm workspace', value: 'setupPnpmWorkspace' },
+        { title: '生成 publish.yml', value: 'createGithubPublish' },
       ],
     });
 
     switch (response.action) {
-      case 'create':
-        await new ProjectTemplateCreator().task1();
+      case 'createPkg':
+        await new CreatePkg().task1();
         break;
-
-      case 'dist':
-        await new DistPackageBuilder().task1();
+      case 'distPkg':
+        await new DistPkg().task1();
+        break;
+      case 'rewritePackageIdentity':
+        await new LibBase().rewriteCurrentPackageIdentity();
+        break;
+      case 'setupPnpmWorkspace':
+        await new LibBase().setupPnpmWorkspaceRoot();
+        break;
+      case 'createGithubPublish':
+        await new LibBase().createCurrentGithubPublish();
         break;
       default:
         console.log('取消');
@@ -78,26 +76,23 @@ class CLI {
     }
   }
 
-  /**执行主程序逻辑 - 入口编排的核心方法*/
   public async run(): Promise<void> {
     try {
       const [cmd, param] = this.args;
       await this.handleCommand(cmd, param);
-    } catch (err: any) {
-      // 统一错误处理
+    } catch (err: unknown) {
       if (err instanceof Appexit) {
-        console.error(`❌ 程序错误: ${err.message}`);
-      } else if (err.message === 'user-cancelled') {
-        console.log('👋 操作已取消');
+        console.error(`程序错误: ${err.message}`);
+      } else if (err instanceof Error && err.message === 'user-cancelled') {
+        console.log('操作已取消');
         return;
       } else {
-        console.error('❌ 程序异常:', err.message || err);
+        console.error('程序异常:', err instanceof Error ? err.message : err);
       }
       process.exit(1);
     }
   }
 }
 
-/**创建CLI实例并运行 - 应用程序入口点*/
 const cli = new CLI();
 cli.run();

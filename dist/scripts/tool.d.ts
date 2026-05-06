@@ -14,6 +14,54 @@ interface cwdProjectInfo_t {
     jsonPath: string;
     cwdPath: string;
 }
+export type GithubPublishConfig = {
+    packageName: string;
+    targetPath: string;
+};
+export type ConfirmOutputNameOptions = {
+    initialName?: string;
+    defaultName: string;
+    message: string;
+    targetLabel: string;
+    existsError?: boolean;
+};
+export type PackageJsonRecord = {
+    name?: string;
+    version?: string;
+    description?: string;
+    author?: string;
+    license?: string;
+    private?: boolean;
+    packageManager?: string;
+    repository?: string | {
+        type?: string;
+        url?: string;
+    };
+    homepage?: string;
+    bugs?: string | {
+        url?: string;
+    };
+    publishConfig?: {
+        access?: "public" | "restricted";
+    };
+    workspaces?: string[];
+    pnpm?: {
+        overrides?: Record<string, string>;
+    } & Record<string, unknown>;
+    scripts?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+    dependencies?: Record<string, string>;
+} & Record<string, unknown>;
+export type ProjectIdentity = {
+    packageName: string;
+    repositoryName: string;
+    author?: string;
+    githubOwner?: string;
+    repositoryUrl?: string;
+    homepage?: string;
+    bugsUrl?: string;
+    license: string;
+};
 /**基类 - 提供通用的工具方法和项目信息访问*/
 export default class LibBase {
     protected readonly cwdProjectInfo: cwdProjectInfo_t;
@@ -27,6 +75,38 @@ export default class LibBase {
     /**执行通用命令并返回结果 - 支持非致命错误模式（工具方法）*/
     protected runCommand(cmd: string, options?: ExecSyncOptionsWithStringEncoding, throwOnError?: boolean): string | null;
     /**从盘符路径直至选择文件的交互式方法 - 支持多级目录导航和文件选择 */
+    protected confirmOutputName(options: ConfirmOutputNameOptions): Promise<string>;
+    protected rewritePackageJsonIdentity(targetPath: string, packageName: string): ProjectIdentity;
+    protected createGithubPublish(config: GithubPublishConfig): string;
+    protected finalizeProjectOutput(targetPath: string, packageName: string): Promise<ProjectIdentity>;
+    rewriteCurrentPackageIdentity(): Promise<void>;
+    setupPnpmWorkspaceRoot(): Promise<void>;
+    createCurrentGithubPublish(): Promise<void>;
+    private pnpmRootSetupAsk;
+    private publishWorkflowAsk;
+    private pnpmWorkspaceFileSet;
+    private npmrcSet;
+    private gitignoreSet;
+    private rootPackageJsonSet;
+    private linesFileEnsure;
+    private isPnpmWorkspaceRoot;
+    private githubPublishContent;
+    private pnpmVersionGet;
+    private validateOutputName;
+    protected readJsonFile<T>(filePath: string): T | undefined;
+    protected readRequiredJsonFile<T>(filePath: string): T;
+    protected writeJsonFile(filePath: string, value: PackageJsonRecord): void;
+    protected toPackageName(name: string): string;
+    protected findPackageRoot(filePath: string): string;
+    protected replaceText(filePath: string, replacements: Record<string, string>): void;
+    protected shellArg(value: string): string;
+    private readmeIdentitySet;
+    private repositoryUrlGet;
+    private currentGitHubRepoGet;
+    private parseGitHubRepo;
+    private githubLoginGet;
+    private gitConfigGet;
+    private commandGet;
     protected askLocalFilePath(fileExtensions?: string[], initialPath?: string): Promise<string>;
     /**检查目录是否为有效的项目目录 */
     private isProjectDirectory;

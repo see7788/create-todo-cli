@@ -90,6 +90,371 @@ export default class LibBase {
         }
     }
     /**从盘符路径直至选择文件的交互式方法 - 支持多级目录导航和文件选择 */
+    async confirmOutputName(options) {
+        let name = options.initialName?.trim() || "";
+        while (true) {
+            if (!name) {
+                const prompts = await import("prompts");
+                const response = await prompts.default({
+                    type: "text",
+                    name: "name",
+                    message: options.message,
+                    initial: options.defaultName,
+                });
+                if (!response.name) {
+                    throw new Error("user-cancelled");
+                }
+                name = String(response.name).trim();
+            }
+            try {
+                this.validateOutputName(name);
+                const targetPath = path.resolve(this.cwdProjectInfo.cwdPath, name);
+                if (options.existsError && fs.existsSync(targetPath)) {
+                    throw new Error(`目录已存在: ${name}`);
+                }
+                const prompts = await import("prompts");
+                const response = await prompts.default({
+                    type: "confirm",
+                    name: "confirmed",
+                    message: `${options.targetLabel}: ${targetPath}\n是否继续？`,
+                    initial: true,
+                });
+                if (response.confirmed === undefined) {
+                    throw new Error("user-cancelled");
+                }
+                if (!response.confirmed) {
+                    name = "";
+                    continue;
+                }
+                return name;
+            }
+            catch (error) {
+                if (error instanceof Error && error.message === "user-cancelled") {
+                    throw error;
+                }
+                console.error(error instanceof Error ? error.message : String(error));
+                name = "";
+            }
+        }
+    }
+    rewritePackageJsonIdentity(targetPath, packageName) {
+        const pkgPath = path.join(targetPath, "package.json");
+        const pkg = this.readJsonFile(pkgPath) ?? {};
+        const sourceRepo = this.parseGitHubRepo(this.repositoryUrlGet(pkg));
+        const currentRepo = this.currentGitHubRepoGet();
+        const githubOwner = currentRepo?.owner ?? this.githubLoginGet();
+        const repositoryUrl = githubOwner ? `https://github.com/${githubOwner}/${packageName}.git` : undefined;
+        const homepage = githubOwner ? `https://github.com/${githubOwner}/${packageName}` : undefined;
+        const identity = {
+            packageName,
+            repositoryName: packageName,
+            author: this.gitConfigGet("user.name") ?? pkg.author,
+            githubOwner,
+            repositoryUrl,
+            homepage,
+            bugsUrl: homepage ? `${homepage}/issues` : undefined,
+            license: pkg.license ?? "MIT",
+        };
+        pkg.name = identity.packageName;
+        pkg.author = identity.author;
+        pkg.license = identity.license;
+        if (identity.repositoryUrl) {
+            pkg.repository = { type: "git", url: identity.repositoryUrl };
+        }
+        else {
+            delete pkg.repository;
+        }
+        if (identity.homepage) {
+            pkg.homepage = identity.homepage;
+        }
+        else {
+            delete pkg.homepage;
+        }
+        if (identity.bugsUrl) {
+            pkg.bugs = { url: identity.bugsUrl };
+        }
+        else {
+            delete pkg.bugs;
+        }
+        this.writeJsonFile(pkgPath, pkg);
+        this.readmeIdentitySet(targetPath, sourceRepo, identity);
+        return identity;
+    }
+    createGithubPublish(config) {
+        const workflowPath = path.join(config.targetPath, ".github", "workflows", "publish.yml");
+        fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
+        fs.writeFileSync(workflowPath, this.githubPublishContent(config.packageName), "utf-8");
+        return workflowPath;
+    }
+    async finalizeProjectOutput(targetPath, packageName) {
+        const identity = this.rewritePackageJsonIdentity(targetPath, packageName);
+        await this.pnpmRootSetupAsk();
+        await this.publishWorkflowAsk(targetPath, identity);
+        return identity;
+    }
+    async rewriteCurrentPackageIdentity() {
+        const prompts = await import("prompts");
+        const response = await prompts.default({
+            type: "text",
+            name: "packageName",
+            message: "请输入 package.json name",
+            initial: this.cwdProjectInfo.jsonInfo.name ?? path.basename(this.cwdProjectInfo.cwdPath),
+        });
+        if (!response.packageName) {
+            throw new Error("user-cancelled");
+        }
+        const identity = this.rewritePackageJsonIdentity(this.cwdProjectInfo.cwdPath, String(response.packageName).trim());
+        console.log(`已重写 package.json 身份信息: ${identity.packageName}`);
+    }
+    async setupPnpmWorkspaceRoot() {
+        await this.pnpmRootSetupAsk();
+    }
+    async createCurrentGithubPublish() {
+        const packageName = this.cwdProjectInfo.jsonInfo.name ?? path.basename(this.cwdProjectInfo.cwdPath);
+        await this.publishWorkflowAsk(this.cwdProjectInfo.cwdPath, {
+            packageName,
+            repositoryName: packageName,
+            author: typeof this.cwdProjectInfo.jsonInfo.author === "string" ? this.cwdProjectInfo.jsonInfo.author : undefined,
+            license: this.cwdProjectInfo.jsonInfo.license ?? "MIT",
+        });
+    }
+    async pnpmRootSetupAsk() {
+        if (this.isPnpmWorkspaceRoot(process.cwd())) {
+            console.log("当前目录已经是 pnpm workspace 根");
+            return;
+        }
+        const prompts = await import("prompts");
+        const response = await prompts.default({
+            type: "confirm",
+            name: "enabled",
+            message: "当前目录不是 pnpm 根，是否初始化 pnpm workspace 根？",
+            initial: false,
+        });
+        if (response.enabled === undefined) {
+            throw new Error("user-cancelled");
+        }
+        if (!response.enabled) {
+            console.log("跳过 pnpm 根初始化");
+            return;
+        }
+        this.pnpmWorkspaceFileSet();
+        this.npmrcSet();
+        this.gitignoreSet();
+        this.rootPackageJsonSet();
+        console.log("pnpm workspace 根配置已补齐");
+    }
+    async publishWorkflowAsk(targetPath, identity) {
+        const prompts = await import("prompts");
+        const response = await prompts.default({
+            type: "confirm",
+            name: "enabled",
+            message: "是否为当前项目创建 GitHub Actions publish.yml？",
+            initial: false,
+        });
+        if (response.enabled === undefined) {
+            throw new Error("user-cancelled");
+        }
+        if (!response.enabled) {
+            console.log("跳过 publish.yml");
+            return;
+        }
+        const workflowPath = this.createGithubPublish({
+            packageName: identity.packageName,
+            targetPath,
+        });
+        console.log(`已创建 ${path.relative(targetPath, workflowPath)}`);
+    }
+    pnpmWorkspaceFileSet() {
+        const filePath = path.join(process.cwd(), "pnpm-workspace.yaml");
+        if (fs.existsSync(filePath)) {
+            return;
+        }
+        fs.writeFileSync(filePath, `packages:
+  - "libs/*"
+  - "apps/*"
+`, "utf-8");
+    }
+    npmrcSet() {
+        this.linesFileEnsure(path.join(process.cwd(), ".npmrc"), ["store-dir=./.pnpm-store"]);
+    }
+    gitignoreSet() {
+        this.linesFileEnsure(path.join(process.cwd(), ".gitignore"), [
+            ".pnpm-store/**",
+            "**/node_modules/**",
+            "**/dist/**",
+            "**/**_bak/",
+            "**/**.bak",
+        ]);
+    }
+    rootPackageJsonSet() {
+        const filePath = path.join(process.cwd(), "package.json");
+        const pkg = this.readJsonFile(filePath) ?? {
+            name: path.basename(process.cwd()),
+            version: "1.0.0",
+            private: true,
+        };
+        pkg.private = true;
+        pkg.workspaces = Array.from(new Set([...(pkg.workspaces ?? []), "libs", "apps"]));
+        pkg.pnpm = {
+            ...(pkg.pnpm ?? {}),
+            overrides: {
+                ...(pkg.pnpm?.overrides ?? {}),
+                tsx: pkg.pnpm?.overrides?.tsx ?? "^4.20.0",
+                typescript: pkg.pnpm?.overrides?.typescript ?? "^5.8.0",
+            },
+        };
+        this.writeJsonFile(filePath, pkg);
+    }
+    linesFileEnsure(filePath, lines) {
+        const oldLines = fs.existsSync(filePath)
+            ? fs.readFileSync(filePath, "utf-8").split(/\r?\n/).filter(Boolean)
+            : [];
+        const nextLines = Array.from(new Set([...oldLines, ...lines]));
+        fs.writeFileSync(filePath, `${nextLines.join("\n")}\n`, "utf-8");
+    }
+    isPnpmWorkspaceRoot(dirPath) {
+        return fs.existsSync(path.join(dirPath, "pnpm-workspace.yaml"));
+    }
+    githubPublishContent(packageName) {
+        return `name: Publish ${packageName}
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${this.pnpmVersionGet()}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm run build --if-present
+      - run: pnpm publish --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}
+`;
+    }
+    pnpmVersionGet() {
+        const packageManager = this.cwdProjectInfo.jsonInfo.packageManager;
+        if (packageManager?.startsWith("pnpm@")) {
+            return packageManager.slice("pnpm@".length);
+        }
+        return "10";
+    }
+    validateOutputName(name) {
+        if (!name) {
+            throw new Error("名称不能为空");
+        }
+        if (name.includes("/")) {
+            throw new Error("名称不能包含 /");
+        }
+        if (!/^[a-zA-Z0-9-_]+$/.test(name)) {
+            throw new Error("名称只能包含字母、数字、- 和 _");
+        }
+    }
+    readJsonFile(filePath) {
+        if (!fs.existsSync(filePath)) {
+            return undefined;
+        }
+        return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    }
+    readRequiredJsonFile(filePath) {
+        const value = this.readJsonFile(filePath);
+        if (!value) {
+            throw new Appexit(`JSON 文件不存在: ${filePath}`);
+        }
+        return value;
+    }
+    writeJsonFile(filePath, value) {
+        fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
+    }
+    toPackageName(name) {
+        return name
+            .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+            .replace(/[^a-zA-Z0-9._~-]+/g, "-")
+            .toLowerCase();
+    }
+    findPackageRoot(filePath) {
+        let dir = path.dirname(filePath);
+        while (path.dirname(dir) !== dir) {
+            if (fs.existsSync(path.join(dir, "package.json"))) {
+                return dir;
+            }
+            dir = path.dirname(dir);
+        }
+        return this.cwdProjectInfo.pkgPath;
+    }
+    replaceText(filePath, replacements) {
+        if (!fs.existsSync(filePath)) {
+            return;
+        }
+        let text = fs.readFileSync(filePath, "utf-8");
+        for (const [from, to] of Object.entries(replacements)) {
+            text = text.split(from).join(to);
+        }
+        fs.writeFileSync(filePath, text, "utf-8");
+    }
+    shellArg(value) {
+        return `"${value.replace(/"/g, '\\"')}"`;
+    }
+    readmeIdentitySet(targetPath, sourceRepo, identity) {
+        const readmePath = path.join(targetPath, "README.md");
+        if (!fs.existsSync(readmePath)) {
+            return;
+        }
+        let content = fs.readFileSync(readmePath, "utf-8");
+        if (sourceRepo && identity.githubOwner) {
+            content = content.replaceAll(`github.com/${sourceRepo.owner}/${sourceRepo.repo}`, `github.com/${identity.githubOwner}/${identity.repositoryName}`);
+            content = content.replaceAll(`${sourceRepo.owner}/${sourceRepo.repo}`, `${identity.githubOwner}/${identity.repositoryName}`);
+        }
+        content = content.replaceAll(/name:\s*["']?[^"'\n]+["']?/gi, `name: ${identity.packageName}`);
+        fs.writeFileSync(readmePath, content, "utf-8");
+    }
+    repositoryUrlGet(pkg) {
+        if (typeof pkg.repository === "string") {
+            return pkg.repository;
+        }
+        return pkg.repository?.url;
+    }
+    currentGitHubRepoGet() {
+        const remote = this.commandGet("git config --get remote.origin.url");
+        return remote ? this.parseGitHubRepo(remote) : undefined;
+    }
+    parseGitHubRepo(value) {
+        const match = value?.match(/github\.com[:/]([^/]+)\/(.+?)(?:\.git)?$/i);
+        if (!match) {
+            return undefined;
+        }
+        return { owner: match[1], repo: match[2] };
+    }
+    githubLoginGet() {
+        return this.commandGet("gh api user --jq .login");
+    }
+    gitConfigGet(key) {
+        return this.commandGet(`git config --get ${key}`);
+    }
+    commandGet(command) {
+        try {
+            const value = execSync(command, { cwd: process.cwd(), encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+            return value || undefined;
+        }
+        catch {
+            return undefined;
+        }
+    }
     async askLocalFilePath(fileExtensions = ['.js', '.jsx', '.ts', '.tsx'], initialPath) {
         const prompts = await import('prompts');
         console.log('📁 开始文件选择...');

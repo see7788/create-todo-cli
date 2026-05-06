@@ -14,4 +14,4 @@ declare class DistPackageBuilder extends LibBase {
     private createPackageJson;
 }
 export default DistPackageBuilder;
-//# sourceMappingURL=dist.d.ts.map
+//# sourceMappingURL=dist_bak.d.ts.map

@@ -1,0 +1,212 @@
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import LibBase, { Appexit } from "./tool.js";
+
+export type DistNpmPkgOptions = {
+  dist: string;
+  entryIndex: string;
+  entryMore?: Record<string, string>;
+};
+
+type PackageJson = {
+  dependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+};
+
+type DistNpmPkgResult = {
+  dist: string;
+  entries: Record<string, string>;
+  packageJson: string;
+  dts: Record<string, string>;
+  js: Record<string, string>;
+};
+
+class DistPkg extends LibBase {
+  private packageName = "dist";
+  private entryIndex = "";
+
+  private get outputPath(): string {
+    return resolve(this.cwdProjectInfo.cwdPath, this.packageName);
+  }
+
+  public async task1(initialPackageName?: string): Promise<void> {
+    this.packageName = await this.confirmOutputName({
+      initialName: initialPackageName,
+      defaultName: "dist",
+      message: "请输入 npm 包输出目录名",
+      targetLabel: "将创建 npm 包产物到",
+    });
+    this.entryIndex = await this.askLocalFilePath([".js", ".jsx", ".ts", ".tsx", ".cjs", ".mjs"], this.cwdProjectInfo.cwdPath);
+    const result = await this.build({
+      dist: this.outputPath,
+      entryIndex: this.entryIndex,
+    });
+
+    console.log(`\n完成 npm 包抽取: ${result.dist}`);
+    console.log(`package.json: ${result.packageJson}`);
+    await this.finalizeProjectOutput(result.dist, this.toPackageName(basename(result.dist)));
+  }
+
+  public async build({ dist, entryIndex, entryMore = {} }: DistNpmPkgOptions): Promise<DistNpmPkgResult> {
+    const outDir = resolve(dist);
+    const entries = {
+      index: resolve(entryIndex),
+      ...Object.fromEntries(Object.entries(entryMore).map(([name, file]) => [name, resolve(file)])),
+    };
+    const packageRoot = this.findPackageRoot(entries.index);
+    const sourceTsconfig = existsSync(join(packageRoot, "tsconfig.app.json"))
+      ? join(packageRoot, "tsconfig.app.json")
+      : join(packageRoot, "tsconfig.json");
+    const external = this.packageDeps(packageRoot);
+    const importNames = this.entryImportNames(entries);
+
+    for (const [name, file] of Object.entries(entries)) {
+      if (!existsSync(file)) {
+        throw new Appexit(`entry ${name} not found: ${file}`);
+      }
+    }
+    if (!existsSync(sourceTsconfig)) {
+      throw new Appexit(`tsconfig not found: ${sourceTsconfig}`);
+    }
+
+    rmSync(outDir, { force: true, recursive: true });
+    mkdirSync(outDir, { recursive: true });
+    const tsconfig = join(outDir, "tsconfig.distPkg.json");
+    writeFileSync(
+      tsconfig,
+      `${JSON.stringify(
+        {
+          extends: sourceTsconfig,
+          compilerOptions: {
+            ignoreDeprecations: "6.0",
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(packageRoot);
+      for (const [name, file] of Object.entries(entries)) {
+        this.runInteractiveCommand(
+          [
+            "pnpm exec tsup",
+            this.shellArg(file),
+            "--format esm,cjs",
+            "--dts",
+            "--out-dir",
+            this.shellArg(outDir),
+            "--tsconfig",
+            this.shellArg(tsconfig),
+            ...external.flatMap(name => ["--external", this.shellArg(name)]),
+          ].join(" "),
+        );
+
+        const sourceName = basename(file).replace(/\.[^.]+$/, "");
+        if (sourceName !== name) {
+          for (const ext of [".js", ".cjs", ".d.ts", ".d.cts"]) {
+            const source = join(outDir, `${sourceName}${ext}`);
+            if (existsSync(source)) {
+              renameSync(source, join(outDir, `${name}${ext}`));
+            }
+          }
+        }
+
+        this.replaceText(
+          join(outDir, `${name}.js`),
+          Object.fromEntries(Object.entries(importNames).map(([from, to]) => [from, `./${to}.js`])),
+        );
+        this.replaceText(
+          join(outDir, `${name}.cjs`),
+          Object.fromEntries(Object.entries(importNames).map(([from, to]) => [from, `./${to}.cjs`])),
+        );
+        this.replaceText(
+          join(outDir, `${name}.d.ts`),
+          Object.fromEntries(Object.entries(importNames).map(([from, to]) => [from, `./${to}`])),
+        );
+        this.replaceText(
+          join(outDir, `${name}.d.cts`),
+          Object.fromEntries(Object.entries(importNames).map(([from, to]) => [from, `./${to}`])),
+        );
+      }
+    } finally {
+      process.chdir(originalCwd);
+    }
+    rmSync(tsconfig, { force: true });
+
+    const name = this.toPackageName(basename(outDir));
+    const files = Object.keys(entries).flatMap(name => [
+      `${name}.js`,
+      `${name}.cjs`,
+      `${name}.d.ts`,
+      `${name}.d.cts`,
+    ]);
+    const exports = Object.fromEntries(
+      Object.keys(entries).map(name => [
+        name === "index" ? "." : `./${name}`,
+        {
+          types: `./${name}.d.ts`,
+          import: `./${name}.js`,
+          require: `./${name}.cjs`,
+        },
+      ]),
+    );
+    const packageJson = join(outDir, "package.json");
+    writeFileSync(
+      packageJson,
+      `${JSON.stringify(
+        {
+          name,
+          version: "0.0.0",
+          type: "module",
+          main: "./index.cjs",
+          module: "./index.js",
+          types: "./index.d.ts",
+          exports,
+          files,
+          peerDependencies: Object.fromEntries(external.map(name => [name, "*"])),
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    return {
+      dist: outDir,
+      entries,
+      packageJson,
+      dts: Object.fromEntries(Object.keys(entries).map(name => [name, join(outDir, `${name}.d.ts`)])),
+      js: Object.fromEntries(Object.keys(entries).map(name => [name, join(outDir, `${name}.js`)])),
+    };
+  }
+
+  private packageDeps(root: string): string[] {
+    const pkg = this.readRequiredJsonFile<PackageJson>(join(root, "package.json"));
+    const deps = { ...pkg.dependencies, ...pkg.peerDependencies };
+    return Object.entries(deps)
+      .filter(([, version]) => !version.startsWith("workspace:"))
+      .map(([name]) => name);
+  }
+
+  private entryImportNames(entries: Record<string, string>): Record<string, string> {
+    return Object.fromEntries(
+      Object.entries(entries).flatMap(([name, file]) => {
+        const root = this.findPackageRoot(file);
+        const pkg = this.readRequiredJsonFile<{ name: string }>(join(root, "package.json"));
+        const subpath = relative(root, file).replace(/\\/g, "/").replace(/\.[^.]+$/, "");
+        return [[`${pkg.name}/${subpath}`, name]];
+      }),
+    );
+  }
+}
+
+if (resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1])) {
+  new DistPkg().task1();
+}
+
+export default DistPkg;
