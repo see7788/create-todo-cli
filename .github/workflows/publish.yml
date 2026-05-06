@@ -1,10 +1,13 @@
 name: Publish to NPM
 
 on:
+  schedule:
+    # 每月第一天检查 token 状态
+    - cron: '0 0 1 * *'
   push:
     branches:
       - master
-  workflow_dispatch:  # 允许手动触发，方便调试
+  workflow_dispatch:
 
 jobs:
   publish:
@@ -12,55 +15,49 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       
-      # 添加 Git 配置
-      - name: Configure Git
-        run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-      
-      - uses: pnpm/action-setup@v5
-        with:
-          version: latest
-          
       - name: Set up Node.js
         uses: actions/setup-node@v5
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org/
           
-      - name: Display current directory and files
+      - name: Check if package needs to be published
+        id: check
         run: |
-          pwd
-          ls -la
-          cat package.json | grep -A 10 -B 10 "name\\|version"
+          # 检查本地版本是否比 npm 上的版本新
+          LOCAL_VERSION=$(node -p "require('./package.json').version")
+          REMOTE_VERSION=$(npm view $(node -p "require('./package.json').name") version 2>/dev/null || echo "0.0.0")
+          
+          echo "Local version: $LOCAL_VERSION"
+          echo "Remote version: $REMOTE_VERSION"
+          
+          if [ "$LOCAL_VERSION" != "$REMOTE_VERSION" ]; then
+            echo "versions_differ=true" >> $GITHUB_OUTPUT
+          else
+            echo "versions_differ=false" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Configure Git
+        if: steps.check.outputs.versions_differ == 'true'
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+      - uses: pnpm/action-setup@v5
+        if: steps.check.outputs.versions_differ == 'true'
+        with:
+          version: latest
           
       - name: Install dependencies
+        if: steps.check.outputs.versions_differ == 'true'
         run: pnpm install --no-frozen-lockfile
 
       - name: Build project
+        if: steps.check.outputs.versions_differ == 'true'
         run: pnpm build
 
-      - name: Check built files
-        run: |
-          ls -la dist/
-          if [ -f dist/index.js ]; then
-            head -5 dist/index.js
-          fi
-
-      - name: Check npm configuration
-        run: |
-          echo "Checking npm configuration..."
-          npm config list
-          echo "Checking current user..."
-          npm whoami || echo "Not logged in or invalid token"
-          echo "Checking if package exists..."
-          npm view create-todo-cli name version --json || echo "Package not found or no access"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM }}
-
       - name: Publish to NPM
-        run: |
-          echo "Publishing to NPM..."
-          npm publish --access public
+        if: steps.check.outputs.versions_differ == 'true'
+        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM }}
