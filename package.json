@@ -12,6 +12,7 @@
     "build": "tsc",
     "dev": "tsx ./src/index.ts",
     "npx": "node dist/index.js",
+    "demo2": "node dist/index.js",
     "demo":"pnpm dlx github:see7788/create-todo-cli"
   },
   "publishConfig": {
