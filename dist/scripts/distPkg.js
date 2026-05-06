@@ -16,9 +16,11 @@ class DistPkg extends LibBase {
             targetLabel: "将创建 npm 包产物到",
         });
         if ((initialMode ?? await this.modeAsk()) === "source") {
-            const result = this.copySourceProject(this.outputPath, await this.selectLocalProjectPath());
+            this.entryIndex = await this.askLocalFilePath([".js", ".jsx", ".ts", ".tsx", ".cjs", ".mjs", ".json"], this.cwdProjectInfo.cwdPath);
+            const result = this.copySourceProject(this.outputPath, this.entryIndex);
             console.log(`\n完成源码 npm 包抽取: ${result.dist}`);
             console.log(`来源项目: ${result.source}`);
+            console.log(`入口文件: ${result.entry}`);
             console.log(`package.json: ${result.packageJson}`);
             await this.finalizeProjectOutput(result.dist, this.toPackageName(basename(result.dist)));
             return;
@@ -167,78 +169,12 @@ class DistPkg extends LibBase {
         }
         return response.mode;
     }
-    async selectLocalProjectPath() {
-        const prompts = await import("prompts");
-        let currentPath = this.cwdProjectInfo.cwdPath;
-        while (true) {
-            const items = readdirSync(currentPath)
-                .map(name => {
-                const itemPath = join(currentPath, name);
-                try {
-                    return { name, path: itemPath, isDirectory: statSync(itemPath).isDirectory() };
-                }
-                catch {
-                    return undefined;
-                }
-            })
-                .filter((item) => Boolean(item))
-                .sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.name.localeCompare(b.name));
-            const response = await prompts.default({
-                type: "select",
-                name: "selection",
-                message: `当前位置: ${currentPath}\n请选择本地项目目录，或选择项目内文件`,
-                choices: [
-                    { title: ".. 上一级目录", value: ".." },
-                    { title: "取消", value: "cancel" },
-                    ...items.map(item => ({
-                        title: item.isDirectory
-                            ? `${item.name}${this.isLocalProjectDirectory(item.path) ? " (项目目录)" : ""}`
-                            : item.name,
-                        value: item.path,
-                        disabled: !item.isDirectory && !this.isSourcePickFile(item.name),
-                    })),
-                ],
-            });
-            if (!response.selection || response.selection === "cancel") {
-                throw new Error("user-cancelled");
-            }
-            if (response.selection === "..") {
-                const parentPath = dirname(currentPath);
-                currentPath = parentPath === currentPath ? currentPath : parentPath;
-                continue;
-            }
-            const stats = statSync(response.selection);
-            if (stats.isFile()) {
-                return response.selection;
-            }
-            currentPath = response.selection;
-            if (!this.isLocalProjectDirectory(currentPath)) {
-                continue;
-            }
-            const confirm = await prompts.default({
-                type: "confirm",
-                name: "enabled",
-                message: `已找到项目目录: ${currentPath}\n是否使用此目录作为源码来源？`,
-                initial: true,
-            });
-            if (confirm.enabled === undefined) {
-                throw new Error("user-cancelled");
-            }
-            if (confirm.enabled) {
-                return currentPath;
-            }
+    copySourceProject(dist, entryFile) {
+        const entry = resolve(entryFile);
+        if (!existsSync(entry) || !statSync(entry).isFile()) {
+            throw new Appexit(`入口文件不存在: ${entry}`);
         }
-    }
-    isLocalProjectDirectory(dirPath) {
-        return existsSync(join(dirPath, "package.json"));
-    }
-    isSourcePickFile(name) {
-        return [".js", ".jsx", ".ts", ".tsx", ".cjs", ".mjs", ".json"].some(ext => name.toLowerCase().endsWith(ext));
-    }
-    copySourceProject(dist, localProjectPath) {
-        const source = statSync(localProjectPath).isDirectory()
-            ? resolve(localProjectPath)
-            : this.findPackageRoot(localProjectPath);
+        const source = this.findPackageRoot(entry);
         if (!existsSync(join(source, "package.json"))) {
             throw new Appexit(`本地项目缺少 package.json: ${source}`);
         }
@@ -246,11 +182,38 @@ class DistPkg extends LibBase {
         rmSync(outDir, { force: true, recursive: true });
         mkdirSync(outDir, { recursive: true });
         this.copyDirectory(source, outDir);
+        this.sourcePackageEntrySet(outDir, source, entry);
         return {
             dist: outDir,
             source,
+            entry,
             packageJson: join(outDir, "package.json"),
         };
+    }
+    sourcePackageEntrySet(outDir, source, entry) {
+        const packageJson = join(outDir, "package.json");
+        const entryPath = `./${relative(source, entry).replace(/\\/g, "/")}`;
+        const pkg = this.readRequiredJsonFile(packageJson);
+        const dtsPath = `${entryPath.replace(/\.[^.]+$/, "")}.d.ts`;
+        pkg.main = entryPath;
+        pkg.module = entryPath;
+        if (entryPath.endsWith(".ts") || entryPath.endsWith(".tsx") || existsSync(join(outDir, dtsPath.slice(2)))) {
+            pkg.types = entryPath.endsWith(".ts") || entryPath.endsWith(".tsx") ? entryPath : dtsPath;
+        }
+        else {
+            delete pkg.types;
+        }
+        pkg.exports = {
+            ".": {
+                ...(pkg.types ? { types: pkg.types } : {}),
+                import: entryPath,
+                default: entryPath,
+            },
+        };
+        if (pkg.files) {
+            pkg.files = Array.from(new Set([...pkg.files, entryPath.slice(2).split("/")[0]]));
+        }
+        this.writeJsonFile(packageJson, pkg);
     }
     copyDirectory(source, target) {
         mkdirSync(target, { recursive: true });

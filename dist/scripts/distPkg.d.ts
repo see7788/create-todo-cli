@@ -23,10 +23,8 @@ declare class DistPkg extends LibBase {
     private packageDeps;
     private entryImportNames;
     private modeAsk;
-    private selectLocalProjectPath;
-    private isLocalProjectDirectory;
-    private isSourcePickFile;
     private copySourceProject;
+    private sourcePackageEntrySet;
     private copyDirectory;
     private shouldSkipCopy;
 }
