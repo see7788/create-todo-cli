@@ -8,23 +8,26 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      NODE_AUTH_TOKEN: ${{ secrets.NPM }}
+
     steps:
       - uses: actions/checkout@v5
 
       - uses: pnpm/action-setup@v5
         with:
           version: latest
-          
+
       - name: Set up Node.js
         uses: actions/setup-node@v5
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org/
-          
+          cache: 'pnpm'
+
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: Publish to NPM
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM }}
+      - name: Publish packages
+        run: npm publish
