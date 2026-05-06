@@ -1,63 +1,34 @@
 name: Publish to NPM
 
 on:
-  schedule:
-    # 每月第一天检查 token 状态
-    - cron: '0 0 1 * *'
   push:
-    branches:
-      - master
+    tags:
+      - "v*"
   workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v5
-      
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org/
-          
-      - name: Check if package needs to be published
-        id: check
-        run: |
-          # 检查本地版本是否比 npm 上的版本新
-          LOCAL_VERSION=$(node -p "require('./package.json').version")
-          REMOTE_VERSION=$(npm view $(node -p "require('./package.json').name") version 2>/dev/null || echo "0.0.0")
-          
-          echo "Local version: $LOCAL_VERSION"
-          echo "Remote version: $REMOTE_VERSION"
-          
-          if [ "$LOCAL_VERSION" != "$REMOTE_VERSION" ]; then
-            echo "versions_differ=true" >> $GITHUB_OUTPUT
-          else
-            echo "versions_differ=false" >> $GITHUB_OUTPUT
-          fi
-          
-      - name: Configure Git
-        if: steps.check.outputs.versions_differ == 'true'
-        run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          
-      - uses: pnpm/action-setup@v5
-        if: steps.check.outputs.versions_differ == 'true'
-        with:
-          version: latest
-          
-      - name: Install dependencies
-        if: steps.check.outputs.versions_differ == 'true'
-        run: pnpm install --no-frozen-lockfile
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
 
-      - name: Build project
-        if: steps.check.outputs.versions_differ == 'true'
-        run: pnpm build
+      - run: pnpm install --frozen-lockfile
 
-      - name: Publish to NPM
-        if: steps.check.outputs.versions_differ == 'true'
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM }}
+      - run: pnpm build
+
+      - run: npm publish
