@@ -12,10 +12,11 @@ class CLI {
     }
     showHelp() {
         console.log(`
-help                 显示帮助
-createPkg <?name>    创建新项目
-distPkg <?name>      抽取 npm 包
-`);
+help                    显示帮助
+createPkg <?name>       创建新项目
+distPkg <?name>         抽取 npm 包，并交互选择分支
+distPkgBundle <?name>   从入口文件构建 ESM / CJS / d.ts npm 包
+distPkgSource <?name>   从本地项目抽取源码 npm 包，不转 JS`);
         process.exit(0);
     }
     async handleCommand(cmd, param) {
@@ -31,6 +32,12 @@ distPkg <?name>      抽取 npm 包
             case 'distPkg':
                 await new DistPkg().task1(param);
                 break;
+            case 'distPkgBundle':
+                await new DistPkg().taskBundle(param);
+                break;
+            case 'distPkgSource':
+                await new DistPkg().taskSource(param);
+                break;
             default:
                 await this.showInteractiveMenu();
         }
@@ -42,7 +49,8 @@ distPkg <?name>      抽取 npm 包
             message: '请选择操作',
             choices: [
                 { title: '创建新项目', value: 'createPkg' },
-                { title: '抽取 npm 包', value: 'distPkg' },
+                { title: '抽取 npm 包：构建 ESM / CJS / d.ts', value: 'distPkgBundle' },
+                { title: '抽取 npm 包：复制源码，不转 JS', value: 'distPkgSource' },
                 { title: '重写 package.json 身份信息', value: 'rewritePackageIdentity' },
                 { title: '初始化 pnpm workspace', value: 'setupPnpmWorkspace' },
                 { title: '生成 publish.yml', value: 'createGithubPublish' },
@@ -52,8 +60,11 @@ distPkg <?name>      抽取 npm 包
             case 'createPkg':
                 await new CreatePkg().task1();
                 break;
-            case 'distPkg':
-                await new DistPkg().task1();
+            case 'distPkgBundle':
+                await new DistPkg().taskBundle();
+                break;
+            case 'distPkgSource':
+                await new DistPkg().taskSource();
                 break;
             case 'rewritePackageIdentity':
                 await new LibBase().rewriteCurrentPackageIdentity();

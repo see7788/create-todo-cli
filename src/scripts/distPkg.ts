@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, join, relative, resolve } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import LibBase, { Appexit } from "./tool.js";
 
@@ -22,6 +22,14 @@ type DistNpmPkgResult = {
   js: Record<string, string>;
 };
 
+type DistPkgMode = "bundle" | "source";
+
+type SourcePkgResult = {
+  dist: string;
+  source: string;
+  packageJson: string;
+};
+
 class DistPkg extends LibBase {
   private packageName = "dist";
   private entryIndex = "";
@@ -30,13 +38,26 @@ class DistPkg extends LibBase {
     return resolve(this.cwdProjectInfo.cwdPath, this.packageName);
   }
 
-  public async task1(initialPackageName?: string): Promise<void> {
+  public async task1(initialPackageName?: string, initialMode?: DistPkgMode): Promise<void> {
     this.packageName = await this.confirmOutputName({
       initialName: initialPackageName,
       defaultName: "dist",
       message: "请输入 npm 包输出目录名",
       targetLabel: "将创建 npm 包产物到",
     });
+
+    if ((initialMode ?? await this.modeAsk()) === "source") {
+      const result = this.copySourceProject(
+        this.outputPath,
+        await this.selectLocalProjectPath(),
+      );
+      console.log(`\n完成源码 npm 包抽取: ${result.dist}`);
+      console.log(`来源项目: ${result.source}`);
+      console.log(`package.json: ${result.packageJson}`);
+      await this.finalizeProjectOutput(result.dist, this.toPackageName(basename(result.dist)));
+      return;
+    }
+
     this.entryIndex = await this.askLocalFilePath([".js", ".jsx", ".ts", ".tsx", ".cjs", ".mjs"], this.cwdProjectInfo.cwdPath);
     const result = await this.build({
       dist: this.outputPath,
@@ -46,6 +67,14 @@ class DistPkg extends LibBase {
     console.log(`\n完成 npm 包抽取: ${result.dist}`);
     console.log(`package.json: ${result.packageJson}`);
     await this.finalizeProjectOutput(result.dist, this.toPackageName(basename(result.dist)));
+  }
+
+  public async taskBundle(initialPackageName?: string): Promise<void> {
+    await this.task1(initialPackageName, "bundle");
+  }
+
+  public async taskSource(initialPackageName?: string): Promise<void> {
+    await this.task1(initialPackageName, "source");
   }
 
   public async build({ dist, entryIndex, entryMore = {} }: DistNpmPkgOptions): Promise<DistNpmPkgResult> {
@@ -202,6 +231,143 @@ class DistPkg extends LibBase {
         return [[`${pkg.name}/${subpath}`, name]];
       }),
     );
+  }
+
+  private async modeAsk(): Promise<DistPkgMode> {
+    const prompts = await import("prompts");
+    const response = await prompts.default({
+      type: "select",
+      name: "mode",
+      message: "请选择 npm 包抽取方式",
+      choices: [
+        { title: "构建产物：入口文件转 ESM / CJS / d.ts", value: "bundle" },
+        { title: "源码产物：从本地项目抽取源码，不转 JS", value: "source" },
+      ],
+    });
+
+    if (!response.mode) {
+      throw new Error("user-cancelled");
+    }
+    return response.mode;
+  }
+
+  private async selectLocalProjectPath(): Promise<string> {
+    const prompts = await import("prompts");
+    let currentPath = this.cwdProjectInfo.cwdPath;
+
+    while (true) {
+      const items = readdirSync(currentPath)
+        .map(name => {
+          const itemPath = join(currentPath, name);
+          try {
+            return { name, path: itemPath, isDirectory: statSync(itemPath).isDirectory() };
+          } catch {
+            return undefined;
+          }
+        })
+        .filter((item): item is { name: string; path: string; isDirectory: boolean } => Boolean(item))
+        .sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.name.localeCompare(b.name));
+
+      const response = await prompts.default({
+        type: "select",
+        name: "selection",
+        message: `当前位置: ${currentPath}\n请选择本地项目目录，或选择项目内文件`,
+        choices: [
+          { title: ".. 上一级目录", value: ".." },
+          { title: "取消", value: "cancel" },
+          ...items.map(item => ({
+            title: item.isDirectory
+              ? `${item.name}${this.isLocalProjectDirectory(item.path) ? " (项目目录)" : ""}`
+              : item.name,
+            value: item.path,
+            disabled: !item.isDirectory && !this.isSourcePickFile(item.name),
+          })),
+        ],
+      });
+
+      if (!response.selection || response.selection === "cancel") {
+        throw new Error("user-cancelled");
+      }
+      if (response.selection === "..") {
+        const parentPath = dirname(currentPath);
+        currentPath = parentPath === currentPath ? currentPath : parentPath;
+        continue;
+      }
+
+      const stats = statSync(response.selection);
+      if (stats.isFile()) {
+        return response.selection;
+      }
+
+      currentPath = response.selection;
+      if (!this.isLocalProjectDirectory(currentPath)) {
+        continue;
+      }
+
+      const confirm = await prompts.default({
+        type: "confirm",
+        name: "enabled",
+        message: `已找到项目目录: ${currentPath}\n是否使用此目录作为源码来源？`,
+        initial: true,
+      });
+      if (confirm.enabled === undefined) {
+        throw new Error("user-cancelled");
+      }
+      if (confirm.enabled) {
+        return currentPath;
+      }
+    }
+  }
+
+  private isLocalProjectDirectory(dirPath: string): boolean {
+    return existsSync(join(dirPath, "package.json"));
+  }
+
+  private isSourcePickFile(name: string): boolean {
+    return [".js", ".jsx", ".ts", ".tsx", ".cjs", ".mjs", ".json"].some(ext => name.toLowerCase().endsWith(ext));
+  }
+
+  private copySourceProject(dist: string, localProjectPath: string): SourcePkgResult {
+    const source = statSync(localProjectPath).isDirectory()
+      ? resolve(localProjectPath)
+      : this.findPackageRoot(localProjectPath);
+
+    if (!existsSync(join(source, "package.json"))) {
+      throw new Appexit(`本地项目缺少 package.json: ${source}`);
+    }
+
+    const outDir = resolve(dist);
+    rmSync(outDir, { force: true, recursive: true });
+    mkdirSync(outDir, { recursive: true });
+    this.copyDirectory(source, outDir);
+
+    return {
+      dist: outDir,
+      source,
+      packageJson: join(outDir, "package.json"),
+    };
+  }
+
+  private copyDirectory(source: string, target: string): void {
+    mkdirSync(target, { recursive: true });
+    for (const name of readdirSync(source)) {
+      if (this.shouldSkipCopy(name)) {
+        continue;
+      }
+
+      const sourcePath = join(source, name);
+      const targetPath = join(target, name);
+      if (statSync(sourcePath).isDirectory()) {
+        this.copyDirectory(sourcePath, targetPath);
+      } else {
+        mkdirSync(dirname(targetPath), { recursive: true });
+        copyFileSync(sourcePath, targetPath);
+      }
+    }
+  }
+
+  private shouldSkipCopy(name: string): boolean {
+    return [".git", "node_modules", "dist", ".pnpm-store"].includes(name);
   }
 }
 

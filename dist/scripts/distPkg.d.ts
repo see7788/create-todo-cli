@@ -11,14 +11,24 @@ type DistNpmPkgResult = {
     dts: Record<string, string>;
     js: Record<string, string>;
 };
+type DistPkgMode = "bundle" | "source";
 declare class DistPkg extends LibBase {
     private packageName;
     private entryIndex;
     private get outputPath();
-    task1(initialPackageName?: string): Promise<void>;
+    task1(initialPackageName?: string, initialMode?: DistPkgMode): Promise<void>;
+    taskBundle(initialPackageName?: string): Promise<void>;
+    taskSource(initialPackageName?: string): Promise<void>;
     build({ dist, entryIndex, entryMore }: DistNpmPkgOptions): Promise<DistNpmPkgResult>;
     private packageDeps;
     private entryImportNames;
+    private modeAsk;
+    private selectLocalProjectPath;
+    private isLocalProjectDirectory;
+    private isSourcePickFile;
+    private copySourceProject;
+    private copyDirectory;
+    private shouldSkipCopy;
 }
 export default DistPkg;
 //# sourceMappingURL=distPkg.d.ts.map
