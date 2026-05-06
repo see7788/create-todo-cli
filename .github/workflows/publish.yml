@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+  workflow_dispatch:  # 允许手动触发，方便调试
 
 jobs:
   publish:
@@ -11,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       
-      # 添加这个步骤来配置 Git
+      # 添加 Git 配置
       - name: Configure Git
         run: |
           git config --global user.name 'github-actions[bot]'
@@ -27,13 +28,39 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org/
           
+      - name: Display current directory and files
+        run: |
+          pwd
+          ls -la
+          cat package.json | grep -A 10 -B 10 "name\\|version"
+          
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
       - name: Build project
         run: pnpm build
 
+      - name: Check built files
+        run: |
+          ls -la dist/
+          if [ -f dist/index.js ]; then
+            head -5 dist/index.js
+          fi
+
+      - name: Check npm configuration
+        run: |
+          echo "Checking npm configuration..."
+          npm config list
+          echo "Checking current user..."
+          npm whoami || echo "Not logged in or invalid token"
+          echo "Checking if package exists..."
+          npm view create-todo-cli name version --json || echo "Package not found or no access"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM }}
+
       - name: Publish to NPM
-        run: npm publish --access public
+        run: |
+          echo "Publishing to NPM..."
+          npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM }}
