@@ -26,6 +26,7 @@ interface cwdProjectInfo_t {
 export type GithubPublishConfig = {
     packageName: string;
     targetPath: string;
+    workingDirectory?: string;
 };
 
 export type ConfirmOutputNameOptions = {
@@ -245,7 +246,7 @@ export default class LibBase {
     protected createGithubPublish(config: GithubPublishConfig): string {
         const workflowPath = path.join(config.targetPath, ".github", "workflows", "publish.yml");
         fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
-        fs.writeFileSync(workflowPath, this.githubPublishContent(config.packageName), "utf-8");
+        fs.writeFileSync(workflowPath, this.githubPublishContent(config.packageName, config.workingDirectory), "utf-8");
         return workflowPath;
     }
 
@@ -398,7 +399,13 @@ export default class LibBase {
         return fs.existsSync(path.join(dirPath, "pnpm-workspace.yaml"));
     }
 
-    private githubPublishContent(packageName: string): string {
+    private githubPublishContent(packageName: string, workingDirectory = "."): string {
+        const defaults = workingDirectory === "."
+            ? ""
+            : `
+    defaults:
+      run:
+        working-directory: ${workingDirectory.replace(/\\/g, "/")}`;
         return `name: Publish ${packageName}
 
 on:
@@ -412,7 +419,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
+      id-token: write${defaults}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -422,10 +429,9 @@ jobs:
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
-          cache: pnpm
       - run: pnpm install --no-frozen-lockfile
       - run: pnpm run build --if-present
-      - run: pnpm publish --access public --no-git-checks
+      - run: pnpm publish --access public --no-git-checks --provenance
         env:
           NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}
 `;

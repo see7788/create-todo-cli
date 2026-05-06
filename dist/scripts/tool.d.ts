@@ -17,6 +17,7 @@ interface cwdProjectInfo_t {
 export type GithubPublishConfig = {
     packageName: string;
     targetPath: string;
+    workingDirectory?: string;
 };
 export type ConfirmOutputNameOptions = {
     initialName?: string;
