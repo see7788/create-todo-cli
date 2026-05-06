@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      NODE_AUTH_TOKEN: ${{ secrets.JPMJS }}
+      NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
 
     steps:
       - uses: actions/checkout@v5
