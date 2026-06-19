@@ -12,18 +12,19 @@ create-todo-cli/
 │  │  ├─ 命令分支
 │  │  │  ├─ help / --help / -h
 │  │  │  ├─ createPkg <?name> //创建npm项目
-│  │  │  ├─ create-node-bin //为 cwd 项目生成 tsx node bin wrapper
+│  │  │  ├─ create-node-bin //为当前 package root 生成 tsx node bin wrapper
 │  │  │  ├─ distPkg <?name> //抽取 npm 包，并交互选择 bundle/source 分支
 │  │  │  ├─ distPkgBundle <?name> //从入口文件构建 ESM / CJS / d.ts npm 包
 │  │  │  ├─ distPkgSource <?name> // 从本地项目抽取源码 npm 包，不转 JS
-│  │  │  └─ gitWorkspacePrelease //把 cwd 的外部 workspace 包同步到 GitHub release 仓库
+│  │  │  ├─ gitWorkspacePrelease //把 cwd 的外部 workspace 包同步到 GitHub release 仓库
+│  │  │  └─ 其他选项：setupPnpmWorkspace / createGithubPublish / rewritePackageIdentity
 │  │  └─ 无参数或未知命令时打开交互菜单
 │  └─ scripts/
 │     ├─ createPkg.ts
 │     │  ├─ 从 GitHub 模板创建新项目
 │     │  └─ 执行 tool.ts 公共收尾
 │     ├─ createNodeBin.ts
-│     │  ├─ 选择 cwd 项目内的 TS/JS 入口文件
+│     │  ├─ 选择当前 package root 内的 TS/JS 入口文件
 │     │  ├─ 生成 bin/*.mjs 生命周期 wrapper
 │     │  └─ 更新 package.json bin、files 和 tsx 运行依赖
 │     ├─ distPkg.ts
@@ -43,10 +44,33 @@ create-todo-cli/
 │        ├─ 重写 package.json 身份信息
 │        ├─ 可选初始化 pnpm workspace
 │        ├─ 可选生成 publish.yml
+│        ├─ 确保项目同名 GitHub 公共仓库
 │        └─ 通用命令、路径、文本工具
 ├─ dist/
 │  └─ TypeScript 编译后的发布产物
 ```
+
+## 命令分组
+
+主选项：
+
+```txt
+createPkg - 创建新项目
+create-node-bin - 注册 TS/JS 入口 dev/start/stop/restart 命令
+distPkgBundle - 抽取 npm 包：构建 ESM / CJS / d.ts
+distPkgSource - 抽取 npm 包：复制源码，不转 JS
+gitWorkspacePrelease - GitHub workspace prelease
+```
+
+其他选项：
+
+```txt
+setupPnpmWorkspace - 初始化 pnpm workspace
+createGithubPublish - 生成 publish.yml
+rewritePackageIdentity - 重写 package.json 身份信息
+```
+
+`setupPnpmWorkspace`、`createGithubPublish`、`rewritePackageIdentity` 会检查当前 GitHub 仓库名是否与项目名一致；不一致时会确保存在一个与项目名同名的 GitHub 公共仓库。
 
 ## create-node-bin
 
@@ -56,7 +80,7 @@ create-todo-cli/
 create-todo-cli create-node-bin
 ```
 
-该命令会围绕当前 `cwd` 项目的 `package.json` 工作：
+该命令会围绕当前所在 package root 的 `package.json` 工作：
 
 - 选择一个当前项目内的 `.ts/.tsx/.js/.jsx/.mjs/.cjs` 入口文件。
 - 生成一个生命周期 wrapper，默认路径类似 `bin/<command>.mjs`。

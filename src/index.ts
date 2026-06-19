@@ -13,10 +13,13 @@ const commandChoices = [
   { title: '抽取 npm 包，并交互选择分支', value: 'distPkg' },
   { title: '抽取 npm 包：构建 ESM / CJS / d.ts', value: 'distPkgBundle' },
   { title: '抽取 npm 包：复制源码，不转 JS', value: 'distPkgSource' },
-  { title: '重写 package.json 身份信息', value: 'rewritePackageIdentity' },
+  { title: 'GitHub workspace prelease', value: 'gitWorkspacePrelease' },
+];
+
+const otherChoices = [
   { title: '初始化 pnpm workspace', value: 'setupPnpmWorkspace' },
   { title: '生成 publish.yml', value: 'createGithubPublish' },
-  { title: 'GitHub workspace prelease', value: 'gitWorkspacePrelease' },
+  { title: '重写 package.json 身份信息', value: 'rewritePackageIdentity' },
 ];
 
 class CLI {
@@ -31,6 +34,8 @@ class CLI {
     console.log([
       'help - 显示帮助',
       ...commandChoices.map(choice => `${choice.value} - ${choice.title}`),
+      '其他选项',
+      ...otherChoices.map(choice => `${choice.value} - ${choice.title}`),
     ].join('\n'));
     process.exit(0);
   }
@@ -57,6 +62,15 @@ class CLI {
       case 'distPkgSource':
         await new DistPkg().taskSource(param);
         break;
+      case 'setupPnpmWorkspace':
+        await new LibBase().setupPnpmWorkspaceRoot();
+        break;
+      case 'createGithubPublish':
+        await new LibBase().createCurrentGithubPublish();
+        break;
+      case 'rewritePackageIdentity':
+        await new LibBase().rewriteCurrentPackageIdentity();
+        break;
       case 'gitWorkspacePrelease':
         await new GitWorkspacePrelease().task1();
         break;
@@ -70,9 +84,13 @@ class CLI {
       type: 'select',
       name: 'action',
       message: '请选择操作',
-      choices: commandChoices
-        .filter(choice => choice.value !== 'distPkg')
-        .map(choice => ({ ...choice, title: `${choice.value} - ${choice.title}` })),
+      choices: [
+        ...commandChoices
+          .filter(choice => choice.value !== 'distPkg')
+          .map(choice => ({ ...choice, title: `${choice.value} - ${choice.title}` })),
+        { title: '其他选项', value: '__other__', disabled: true },
+        ...otherChoices.map(choice => ({ ...choice, title: `${choice.value} - ${choice.title}` })),
+      ],
     });
 
     switch (response.action) {

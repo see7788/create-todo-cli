@@ -257,15 +257,14 @@ export default class LibBase {
         const pkgPath = path.join(targetPath, "package.json");
         const pkg = this.readJsonFile<PackageJsonRecord>(pkgPath) ?? {};
         const sourceRepo = this.parseGitHubRepo(this.repositoryUrlGet(pkg));
-        const currentRepo = this.currentGitHubRepoGet();
-        const githubOwner = currentRepo?.owner ?? this.githubLoginGet();
-        const repositoryUrl = githubOwner ? `https://github.com/${githubOwner}/${packageName}.git` : undefined;
-        const homepage = githubOwner ? `https://github.com/${githubOwner}/${packageName}` : undefined;
+        const projectRepo = this.githubProjectRepoGet(packageName);
+        const repositoryUrl = projectRepo ? `https://github.com/${projectRepo.owner}/${projectRepo.repo}.git` : undefined;
+        const homepage = projectRepo ? `https://github.com/${projectRepo.owner}/${projectRepo.repo}` : undefined;
         const identity: ProjectIdentity = {
             packageName,
-            repositoryName: packageName,
+            repositoryName: projectRepo?.repo ?? this.githubRepositoryNameGet(packageName),
             author: this.gitConfigGet("user.name") ?? pkg.author,
-            githubOwner,
+            githubOwner: projectRepo?.owner,
             repositoryUrl,
             homepage,
             bugsUrl: homepage ? `${homepage}/issues` : undefined,
@@ -323,21 +322,30 @@ export default class LibBase {
             throw new Error("user-cancelled");
         }
 
-        const identity = this.rewritePackageJsonIdentity(this.cwdProjectInfo.pkgPath, String(response.packageName).trim());
+        const packageName = String(response.packageName).trim();
+        this.githubProjectRepoEnsure(packageName);
+        const identity = this.rewritePackageJsonIdentity(this.cwdProjectInfo.pkgPath, packageName);
         console.log(`已重写 package.json 身份信息: ${identity.packageName}`);
         console.log(`package.json: ${this.pathDisplay(this.packagePath("package.json"))}`);
     }
 
     public async setupPnpmWorkspaceRoot(): Promise<void> {
+        const packageName = this.cwdProjectInfo.jsonInfo.name ?? path.basename(this.cwdProjectInfo.pkgPath);
+        this.githubProjectRepoEnsure(packageName);
         await this.pnpmRootSetupAsk();
     }
 
     public async createCurrentGithubPublish(): Promise<void> {
         const packageName = this.cwdProjectInfo.jsonInfo.name ?? path.basename(this.cwdProjectInfo.pkgPath);
+        const projectRepo = this.githubProjectRepoEnsure(packageName);
         await this.publishWorkflowAsk(this.cwdProjectInfo.pkgPath, {
             packageName,
-            repositoryName: packageName,
+            repositoryName: projectRepo?.repo ?? this.githubRepositoryNameGet(packageName),
             author: typeof this.cwdProjectInfo.jsonInfo.author === "string" ? this.cwdProjectInfo.jsonInfo.author : undefined,
+            githubOwner: projectRepo?.owner,
+            repositoryUrl: projectRepo ? `https://github.com/${projectRepo.owner}/${projectRepo.repo}.git` : undefined,
+            homepage: projectRepo ? `https://github.com/${projectRepo.owner}/${projectRepo.repo}` : undefined,
+            bugsUrl: projectRepo ? `https://github.com/${projectRepo.owner}/${projectRepo.repo}/issues` : undefined,
             license: this.cwdProjectInfo.jsonInfo.license ?? "MIT",
         });
     }
@@ -577,6 +585,66 @@ jobs:
         }
         content = content.replaceAll(/name:\s*["']?[^"'\n]+["']?/gi, `name: ${identity.packageName}`);
         fs.writeFileSync(readmePath, content, "utf-8");
+    }
+
+    private githubProjectRepoEnsure(packageName: string): GitHubRepo | undefined {
+        const projectRepo = this.githubProjectRepoGet(packageName);
+        if (!projectRepo) {
+            console.log("未检测到 GitHub owner，跳过同名公共仓库创建");
+            return undefined;
+        }
+
+        const currentRepo = this.currentGitHubRepoGet();
+        if (currentRepo?.owner === projectRepo.owner && currentRepo.repo === projectRepo.repo) {
+            return projectRepo;
+        }
+
+        if (this.githubRepoExists(projectRepo)) {
+            console.log(`GitHub 仓库已存在: ${projectRepo.owner}/${projectRepo.repo}`);
+            return projectRepo;
+        }
+
+        try {
+            execSync(
+                `gh repo create ${this.shellArg(`${projectRepo.owner}/${projectRepo.repo}`)} --public --clone=false`,
+                { cwd: this.cwdProjectInfo.pkgPath, stdio: "inherit" },
+            );
+            console.log(`已创建 GitHub 公共仓库: ${projectRepo.owner}/${projectRepo.repo}`);
+            return projectRepo;
+        } catch {
+            throw new Appexit(`GitHub 公共仓库创建失败: ${projectRepo.owner}/${projectRepo.repo}`);
+        }
+    }
+
+    private githubProjectRepoGet(packageName: string): GitHubRepo | undefined {
+        const currentRepo = this.currentGitHubRepoGet();
+        const owner = currentRepo?.owner ?? this.githubLoginGet();
+        if (!owner) {
+            return undefined;
+        }
+        return {
+            owner,
+            repo: this.githubRepositoryNameGet(packageName),
+        };
+    }
+
+    private githubRepoExists(repo: GitHubRepo): boolean {
+        try {
+            execSync(`gh repo view ${this.shellArg(`${repo.owner}/${repo.repo}`)}`, {
+                cwd: this.cwdProjectInfo.pkgPath,
+                stdio: "ignore",
+            });
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    private githubRepositoryNameGet(packageName: string): string {
+        return packageName
+            .replace(/^@/, "")
+            .replace(/[\\/]+/g, "-")
+            .replace(/[^a-zA-Z0-9._-]+/g, "-");
     }
 
     private repositoryUrlGet(pkg: PackageJsonRecord): string | undefined {
