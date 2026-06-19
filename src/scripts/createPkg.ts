@@ -35,7 +35,7 @@ class CreatePkg extends LibBase {
       this.targetCreated = true;
       await this.finalizeProjectOutput(this.target.path, this.target.name);
       console.log('\n🎉 完成项目创建流程');
-      console.log(`📁 项目路径: ${path.resolve(this.target.path)}`);
+      console.log(`📁 项目路径: ${this.pathDisplay(this.target.path)}`);
       console.log('\n💡 下一步操作:');
       console.log(`   cd ${this.target.name}`);
       console.log('   pnpm install');

@@ -31,6 +31,7 @@ type GithubPublishConfig = {
 };
 
 type ConfirmOutputNameOptions = {
+    basePath?: string;
     initialName?: string;
     defaultName: string;
     message: string;
@@ -181,9 +182,10 @@ export default class LibBase {
 
     protected async confirmOutputTarget(options: ConfirmOutputNameOptions): Promise<OutputTarget> {
         const name = await this.confirmOutputName(options);
+        const basePath = options.basePath ?? this.cwdProjectInfo.cwdPath;
         return {
             name,
-            path: path.resolve(this.cwdProjectInfo.cwdPath, name),
+            path: path.resolve(basePath, name),
         };
     }
 
@@ -207,7 +209,8 @@ export default class LibBase {
 
             try {
                 this.validateOutputName(name);
-                const targetPath = path.resolve(this.cwdProjectInfo.cwdPath, name);
+                const basePath = options.basePath ?? this.cwdProjectInfo.cwdPath;
+                const targetPath = path.resolve(basePath, name);
                 if (options.existsError && fs.existsSync(targetPath)) {
                     throw new Error(`目录已存在: ${name}`);
                 }
@@ -236,6 +239,18 @@ export default class LibBase {
                 name = "";
             }
         }
+    }
+
+    protected packagePath(...paths: string[]): string {
+        return path.resolve(this.cwdProjectInfo.pkgPath, ...paths);
+    }
+
+    protected packageRelativePath(filePath: string): string {
+        return path.relative(this.cwdProjectInfo.pkgPath, filePath).replace(/\\/g, "/");
+    }
+
+    protected pathDisplay(filePath: string): string {
+        return path.resolve(filePath);
     }
 
     protected rewritePackageJsonIdentity(targetPath: string, packageName: string): ProjectIdentity {
@@ -301,15 +316,16 @@ export default class LibBase {
             type: "text",
             name: "packageName",
             message: "请输入 package.json name",
-            initial: this.cwdProjectInfo.jsonInfo.name ?? path.basename(this.cwdProjectInfo.cwdPath),
+            initial: this.cwdProjectInfo.jsonInfo.name ?? path.basename(this.cwdProjectInfo.pkgPath),
         });
 
         if (!response.packageName) {
             throw new Error("user-cancelled");
         }
 
-        const identity = this.rewritePackageJsonIdentity(this.cwdProjectInfo.cwdPath, String(response.packageName).trim());
+        const identity = this.rewritePackageJsonIdentity(this.cwdProjectInfo.pkgPath, String(response.packageName).trim());
         console.log(`已重写 package.json 身份信息: ${identity.packageName}`);
+        console.log(`package.json: ${this.pathDisplay(this.packagePath("package.json"))}`);
     }
 
     public async setupPnpmWorkspaceRoot(): Promise<void> {
@@ -317,8 +333,8 @@ export default class LibBase {
     }
 
     public async createCurrentGithubPublish(): Promise<void> {
-        const packageName = this.cwdProjectInfo.jsonInfo.name ?? path.basename(this.cwdProjectInfo.cwdPath);
-        await this.publishWorkflowAsk(this.cwdProjectInfo.cwdPath, {
+        const packageName = this.cwdProjectInfo.jsonInfo.name ?? path.basename(this.cwdProjectInfo.pkgPath);
+        await this.publishWorkflowAsk(this.cwdProjectInfo.pkgPath, {
             packageName,
             repositoryName: packageName,
             author: typeof this.cwdProjectInfo.jsonInfo.author === "string" ? this.cwdProjectInfo.jsonInfo.author : undefined,
@@ -352,7 +368,7 @@ export default class LibBase {
         this.npmrcSet();
         this.gitignoreSet();
         this.rootPackageJsonSet();
-        console.log("pnpm workspace 根配置已补齐");
+        console.log(`pnpm workspace 根配置已补齐: ${this.pathDisplay(this.cwdProjectInfo.workspacePath)}`);
     }
 
     private async publishWorkflowAsk(targetPath: string, identity: ProjectIdentity): Promise<void> {
@@ -376,7 +392,7 @@ export default class LibBase {
             packageName: identity.packageName,
             targetPath,
         });
-        console.log(`已创建 ${path.relative(targetPath, workflowPath)}`);
+        console.log(`已创建 publish.yml: ${this.pathDisplay(workflowPath)}`);
     }
 
     private pnpmWorkspaceFileSet(): void {

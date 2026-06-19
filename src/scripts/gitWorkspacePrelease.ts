@@ -23,7 +23,7 @@ type WorkspacePlan = {
   externalPackages: string[];
 };
 
-class GitPnpmrelease extends LibBase {
+class GitWorkspacePrelease extends LibBase {
   private readonly projectRoot = this.workspaceRootFind();
   private readonly packageName = this.projectPackageNameRead();
   private readonly releaseRepoName = `${this.releaseNamePart(this.packageName)}_release`;
@@ -46,8 +46,8 @@ class GitPnpmrelease extends LibBase {
     this.releaseLockfileRefresh();
     this.releaseRepoCommitAndPush();
 
-    console.log(`git pnpm release 完成: ${sourceRemote.owner}/${this.releaseRepoName}`);
-    console.log(`本地 release 目录: ${this.releaseRoot}`);
+    console.log(`git workspace prelease 完成: ${sourceRemote.owner}/${this.releaseRepoName}`);
+    console.log(`本地 release 目录: ${this.pathDisplay(this.releaseRoot)}`);
   }
 
   private workspacePlanRead(): WorkspacePlan {
@@ -329,4 +329,4 @@ class GitPnpmrelease extends LibBase {
   }
 }
 
-export default GitPnpmrelease;
+export default GitWorkspacePrelease;

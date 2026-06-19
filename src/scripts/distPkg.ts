@@ -51,6 +51,7 @@ class DistPkg extends LibBase {
 
   public async task1(initialPackageName?: string, initialMode?: DistPkgMode): Promise<void> {
     this.target = await this.confirmOutputTarget({
+      basePath: this.cwdProjectInfo.pkgPath,
       initialName: initialPackageName,
       defaultName: "dist",
       message: "请输入 npm 包输出目录名",
@@ -64,7 +65,7 @@ class DistPkg extends LibBase {
         this.target.path,
         this.entryIndex,
       );
-      console.log(`\n完成源码 npm 包抽取: ${result.dist}`);
+      console.log(`\n完成源码 npm 包抽取: ${this.pathDisplay(result.dist)}`);
       console.log(`来源项目: ${result.source}`);
       console.log(`入口文件: ${result.entry}`);
       console.log(`package.json: ${result.packageJson}`);
@@ -78,7 +79,7 @@ class DistPkg extends LibBase {
       entryIndex: this.entryIndex,
     });
 
-    console.log(`\n完成 npm 包抽取: ${result.dist}`);
+    console.log(`\n完成 npm 包抽取: ${this.pathDisplay(result.dist)}`);
     console.log(`package.json: ${result.packageJson}`);
     await this.finalizeProjectOutput(result.dist, this.toPackageName(basename(result.dist)));
   }

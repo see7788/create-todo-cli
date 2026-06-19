@@ -3,7 +3,7 @@ import prompts from 'prompts';
 import CreatePkg from './scripts/createPkg.js';
 import CreateNodeBin from './scripts/createNodeBin.js';
 import DistPkg from './scripts/distPkg.js';
-import GitPnpmrelease from './scripts/gitPnpmrelease.js';
+import GitWorkspacePrelease from './scripts/gitWorkspacePrelease.js';
 import LibBase, { Appexit } from './scripts/tool.js';
 import pkg from '../package.json' with { type: 'json' };
 
@@ -16,7 +16,7 @@ const commandChoices = [
   { title: '重写 package.json 身份信息', value: 'rewritePackageIdentity' },
   { title: '初始化 pnpm workspace', value: 'setupPnpmWorkspace' },
   { title: '生成 publish.yml', value: 'createGithubPublish' },
-  { title: 'GitHub pnpm workspace release', value: 'gitPnpmrelease' },
+  { title: 'GitHub workspace prelease', value: 'gitWorkspacePrelease' },
 ];
 
 class CLI {
@@ -57,8 +57,8 @@ class CLI {
       case 'distPkgSource':
         await new DistPkg().taskSource(param);
         break;
-      case 'gitPnpmrelease':
-        await new GitPnpmrelease().task1();
+      case 'gitWorkspacePrelease':
+        await new GitWorkspacePrelease().task1();
         break;
       default:
         await this.showInteractiveMenu();
@@ -97,8 +97,8 @@ class CLI {
       case 'createGithubPublish':
         await new LibBase().createCurrentGithubPublish();
         break;
-      case 'gitPnpmrelease':
-        await new GitPnpmrelease().task1();
+      case 'gitWorkspacePrelease':
+        await new GitWorkspacePrelease().task1();
         break;
       default:
         console.log('取消');

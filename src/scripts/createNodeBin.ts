@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import prompts from "prompts";
 import LibBase from "./tool.js";
 
@@ -10,7 +10,6 @@ type NodeBinPackageJson = {
   files?: string[];
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
-  scripts?: Record<string, string>;
 } & Record<string, unknown>;
 
 type NodeBinTarget = {
@@ -21,23 +20,25 @@ type NodeBinTarget = {
 
 class CreateNodeBin extends LibBase {
   public async task1(): Promise<void> {
-    const packageJsonPath = join(this.cwdProjectInfo.pkgPath, "package.json");
+    const packageJsonPath = this.packagePath("package.json");
     const pkg = this.readRequiredJsonFile<NodeBinPackageJson>(packageJsonPath);
     const target = await this.nodeBinTargetAsk(pkg);
+    const wrapperPath = this.packagePath(target.wrapperPath);
 
     this.nodeBinWrapperWrite(target);
     this.packageJsonSet(packageJsonPath, pkg, target);
     this.pnpmLinkRun();
 
-    console.log(`已生成 node bin wrapper: ${target.wrapperPath}`);
+    console.log(`已生成 node bin wrapper: ${this.pathDisplay(wrapperPath)}`);
     console.log(`入口文件: ${target.entryPath}`);
+    console.log(`package.json: ${this.pathDisplay(packageJsonPath)}`);
     console.log(`命令: ${this.lifecycleCommandNames(target.commandName).join(", ")}`);
     console.log("已执行 pnpm link");
   }
 
   private async nodeBinTargetAsk(pkg: NodeBinPackageJson): Promise<NodeBinTarget> {
     const entryPath = await this.askLocalFilePath([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"], this.cwdProjectInfo.cwdPath, false);
-    const entryRelativePath = relative(this.cwdProjectInfo.pkgPath, entryPath);
+    const entryRelativePath = this.packageRelativePath(entryPath);
     if (entryRelativePath.startsWith("..") || isAbsolute(entryRelativePath)) {
       throw new Error("bin 入口文件必须位于当前项目内");
     }
@@ -54,7 +55,7 @@ class CreateNodeBin extends LibBase {
       name: "value",
       message: [
         `入口文件: ${target.entryPath}`,
-        `wrapper: ${resolve(this.cwdProjectInfo.pkgPath, target.wrapperPath)}`,
+        `wrapper: ${this.packagePath(target.wrapperPath)}`,
         `命令: ${this.lifecycleCommandNames(target.commandName).join(", ")}`,
         "是否生成并执行 pnpm link？",
       ].join("\n"),
@@ -91,9 +92,9 @@ class CreateNodeBin extends LibBase {
   }
 
   private nodeBinWrapperWrite(target: NodeBinTarget): void {
-    const wrapperPath = resolve(this.cwdProjectInfo.pkgPath, target.wrapperPath);
+    const wrapperPath = this.packagePath(target.wrapperPath);
     const entryPath = resolve(target.entryPath);
-    const rootRelativePath = this.nodeImportPath(dirname(wrapperPath), this.cwdProjectInfo.pkgPath);
+    const rootRelativePath = this.nodeImportPath(dirname(wrapperPath), this.packagePath());
     const entryRelativePath = this.nodeImportPath(dirname(wrapperPath), entryPath);
 
     mkdirSync(dirname(wrapperPath), { recursive: true });
@@ -112,16 +113,20 @@ const tsx = join(packageRoot, "node_modules", "tsx", "dist", "cli.mjs");
 const commandName = ${JSON.stringify(target.commandName)};
 const commandArg = process.argv[2];
 const binName = basename(process.argv[1] ?? "");
-const command = commandArg === "dev" || commandArg === "start" || commandArg === "stop" || commandArg === "restart"
+const lifecycleCommandFromArg = commandArg === "dev" || commandArg === "start" || commandArg === "stop" || commandArg === "restart"
   ? commandArg
-  : binName.endsWith("-stop")
-    ? "stop"
-    : binName.endsWith("-start")
-      ? "start"
-    : binName.endsWith("-restart")
-      ? "restart"
-      : "dev";
-const passthroughArgs = commandArg === command ? process.argv.slice(3) : process.argv.slice(2);
+  : undefined;
+const lifecycleCommandFromBin = binName.endsWith("-stop")
+  ? "stop"
+  : binName.endsWith("-start")
+    ? "start"
+  : binName.endsWith("-restart")
+    ? "restart"
+  : binName.endsWith("-dev")
+    ? "dev"
+    : undefined;
+const command = lifecycleCommandFromArg ?? lifecycleCommandFromBin;
+const passthroughArgs = lifecycleCommandFromArg ? process.argv.slice(3) : process.argv.slice(2);
 
 if (!existsSync(tsx)) {
   console.error("缺少 tsx，请先安装依赖");
@@ -134,6 +139,7 @@ const nodeEnv = command === "dev"
   : command === "start"
     ? "production"
     : process.env.NODE_ENV;
+const shouldWatch = command === "dev" || command === "restart";
 
 const processInfosGet = () => {
   if (process.platform === "win32") {
@@ -245,7 +251,10 @@ const devStopAndExit = (exitCode) => {
   }
 };
 
-const child = spawn(process.execPath, [tsx, "watch", "--clear-screen=false", entry, ...passthroughArgs], {
+const childArgs = shouldWatch
+  ? [tsx, "watch", "--clear-screen=false", entry, ...passthroughArgs]
+  : [tsx, entry, ...passthroughArgs];
+const child = spawn(process.execPath, childArgs, {
   env: {
     ...process.env,
     ...(nodeEnv ? { NODE_ENV: nodeEnv } : {}),
@@ -255,8 +264,10 @@ const child = spawn(process.execPath, [tsx, "watch", "--clear-screen=false", ent
   windowsHide: true,
 });
 
-process.once("SIGINT", () => devStopAndExit(130));
-process.once("SIGTERM", () => devStopAndExit(143));
+if (shouldWatch) {
+  process.once("SIGINT", () => devStopAndExit(130));
+  process.once("SIGTERM", () => devStopAndExit(143));
+}
 
 child.once("error", (error) => {
   console.error(error.message);
@@ -281,13 +292,6 @@ child.once("exit", (code, signal) => {
     pkg.bin = {
       ...(pkg.bin && typeof pkg.bin === "object" ? pkg.bin : {}),
       ...Object.fromEntries(this.lifecycleCommandNames(target.commandName).map(commandName => [commandName, wrapperPackagePath])),
-    };
-    pkg.scripts = {
-      ...(pkg.scripts ?? {}),
-      dev: `node ${wrapperPackagePath} dev`,
-      start: `node ${wrapperPackagePath} start`,
-      stop: `node ${wrapperPackagePath} stop`,
-      restart: `node ${wrapperPackagePath} restart`,
     };
     pkg.files = this.packageFilesNext(pkg.files, target);
 
@@ -320,7 +324,7 @@ child.once("exit", (code, signal) => {
     return Array.from(new Set([
       ...(files ?? []),
       this.packageFileEntry(target.wrapperPath),
-      this.packageFileEntry(relative(this.cwdProjectInfo.pkgPath, target.entryPath)),
+      this.packageFileEntry(this.packageRelativePath(target.entryPath)),
     ]));
   }
 

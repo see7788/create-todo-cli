@@ -16,7 +16,7 @@
     "access": "public"
   },
   "bin": {
-    "create-todo-cli": "./bin/create-todo-cli.js"
+    "create-todo-cli": "./seripts/create-todo-cli.js"
   },
   "engines": {
     "node": ">=18"
