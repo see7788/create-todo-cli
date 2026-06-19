@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import prompts from "prompts";
-import LibBase from "./tool.js";
+import LibBase from "./public.js";
 
 type NodeBinPackageJson = {
   name?: string;

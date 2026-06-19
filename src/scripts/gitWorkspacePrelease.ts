@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import prompts from "prompts";
-import LibBase, { Appexit } from "./tool.js";
+import LibBase, { Appexit } from "./public.js";
 
 type GitRemote = {
   owner: string;

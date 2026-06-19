@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import prompts from 'prompts';
 import degit from 'degit';
-import LibBase, { Appexit } from "./tool.js";
+import LibBase, { Appexit } from "./public.js";
 
 type CreateTarget = {
   name: string;

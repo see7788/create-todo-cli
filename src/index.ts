@@ -4,7 +4,7 @@ import CreatePkg from './scripts/createPkg.js';
 import CreateNodeBin from './scripts/createNodeBin.js';
 import DistPkg from './scripts/distPkg.js';
 import GitWorkspacePrelease from './scripts/gitWorkspacePrelease.js';
-import LibBase, { Appexit } from './scripts/tool.js';
+import LibBase, { Appexit } from './scripts/public.js';
 import pkg from '../package.json' with { type: 'json' };
 
 const commandChoices = [

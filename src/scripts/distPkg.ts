@@ -2,7 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, 
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSync } from "esbuild";
-import LibBase, { Appexit } from "./tool.js";
+import LibBase, { Appexit } from "./public.js";
 
 type DistNpmPkgOptions = {
   dist: string;
