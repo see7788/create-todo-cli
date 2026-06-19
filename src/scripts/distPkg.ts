@@ -1,9 +1,10 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildSync } from "esbuild";
 import LibBase, { Appexit } from "./tool.js";
 
-export type DistNpmPkgOptions = {
+type DistNpmPkgOptions = {
   dist: string;
   entryIndex: string;
   entryMore?: Record<string, string>;
@@ -31,26 +32,36 @@ type SourcePkgResult = {
   packageJson: string;
 };
 
+type SourcePathAlias = {
+  prefix: string;
+  suffix: string;
+  targetPrefix: string;
+  targetSuffix: string;
+  baseUrl: string;
+};
+
+type DistTarget = {
+  name: string;
+  path: string;
+};
+
 class DistPkg extends LibBase {
-  private packageName = "dist";
+  private target!: DistTarget;
   private entryIndex = "";
 
-  private get outputPath(): string {
-    return resolve(this.cwdProjectInfo.cwdPath, this.packageName);
-  }
-
   public async task1(initialPackageName?: string, initialMode?: DistPkgMode): Promise<void> {
-    this.packageName = await this.confirmOutputName({
+    this.target = await this.confirmOutputTarget({
       initialName: initialPackageName,
       defaultName: "dist",
       message: "请输入 npm 包输出目录名",
       targetLabel: "将创建 npm 包产物到",
     });
 
-    if ((initialMode ?? await this.modeAsk()) === "source") {
+    const mode = initialMode ?? await this.modeAsk();
+    if (mode === "source") {
       this.entryIndex = await this.askLocalFilePath([".js", ".jsx", ".ts", ".tsx", ".cjs", ".mjs", ".json"], this.cwdProjectInfo.cwdPath);
       const result = this.copySourceProject(
-        this.outputPath,
+        this.target.path,
         this.entryIndex,
       );
       console.log(`\n完成源码 npm 包抽取: ${result.dist}`);
@@ -63,7 +74,7 @@ class DistPkg extends LibBase {
 
     this.entryIndex = await this.askLocalFilePath([".js", ".jsx", ".ts", ".tsx", ".cjs", ".mjs"], this.cwdProjectInfo.cwdPath);
     const result = await this.build({
-      dist: this.outputPath,
+      dist: this.target.path,
       entryIndex: this.entryIndex,
     });
 
@@ -80,7 +91,7 @@ class DistPkg extends LibBase {
     await this.task1(initialPackageName, "source");
   }
 
-  public async build({ dist, entryIndex, entryMore = {} }: DistNpmPkgOptions): Promise<DistNpmPkgResult> {
+  private async build({ dist, entryIndex, entryMore = {} }: DistNpmPkgOptions): Promise<DistNpmPkgResult> {
     const outDir = resolve(dist);
     const entries = {
       index: resolve(entryIndex),
@@ -267,10 +278,18 @@ class DistPkg extends LibBase {
     }
 
     const outDir = resolve(dist);
+    const files = this.sourceFilesCollect(source, entry);
+    const sourceRoot = dirname(entry);
     rmSync(outDir, { force: true, recursive: true });
     mkdirSync(outDir, { recursive: true });
-    this.copyDirectory(source, outDir);
-    this.sourcePackageEntrySet(outDir, source, entry);
+    copyFileSync(join(source, "package.json"), join(outDir, "package.json"));
+    for (const file of files) {
+      const target = this.sourceTargetPath(outDir, source, sourceRoot, file);
+      mkdirSync(dirname(target), { recursive: true });
+      this.copySourceFile(outDir, source, sourceRoot, file, target);
+    }
+    this.sourceTsconfigWrite(outDir, source, sourceRoot, files);
+    this.sourcePackageEntrySet(outDir, source, sourceRoot, entry, files);
 
     return {
       dist: outDir,
@@ -280,11 +299,12 @@ class DistPkg extends LibBase {
     };
   }
 
-  private sourcePackageEntrySet(outDir: string, source: string, entry: string): void {
+  private sourcePackageEntrySet(outDir: string, source: string, sourceRoot: string, entry: string, files: string[]): void {
     const packageJson = join(outDir, "package.json");
-    const entryPath = `./${relative(source, entry).replace(/\\/g, "/")}`;
+    const entryPath = `./${relative(sourceRoot, entry).replace(/\\/g, "/")}`;
     const pkg = this.readRequiredJsonFile<
       PackageJson & {
+        bin?: Record<string, string> | string;
         main?: string;
         module?: string;
         types?: string;
@@ -308,33 +328,300 @@ class DistPkg extends LibBase {
         default: entryPath,
       },
     };
-
-    if (pkg.files) {
-      pkg.files = Array.from(new Set([...pkg.files, entryPath.slice(2).split("/")[0]]));
-    }
+    pkg.files = this.sourcePackageFiles(outDir, source, sourceRoot, files);
+    delete pkg.bin;
     this.writeJsonFile(packageJson, pkg);
   }
 
-  private copyDirectory(source: string, target: string): void {
-    mkdirSync(target, { recursive: true });
-    for (const name of readdirSync(source)) {
-      if (this.shouldSkipCopy(name)) {
-        continue;
-      }
+  private sourceFilesCollect(root: string, entry: string): string[] {
+    return Array.from(
+      new Set([
+        ...this.sourceFilesCollectByBuild(root, entry),
+        ...this.sourceFilesCollectByText(root, entry),
+      ]),
+    ).sort((a, b) => a.localeCompare(b));
+  }
 
-      const sourcePath = join(source, name);
-      const targetPath = join(target, name);
-      if (statSync(sourcePath).isDirectory()) {
-        this.copyDirectory(sourcePath, targetPath);
-      } else {
-        mkdirSync(dirname(targetPath), { recursive: true });
-        copyFileSync(sourcePath, targetPath);
-      }
+  private sourceFilesCollectByBuild(root: string, entry: string): string[] {
+    try {
+      const metafile = buildSync({
+        entryPoints: [entry],
+        absWorkingDir: root,
+        bundle: true,
+        write: false,
+        metafile: true,
+        format: "esm",
+        platform: "neutral",
+        packages: "external",
+        tsconfig: this.sourceTsconfigPath(root),
+        logLevel: "silent",
+      }).metafile;
+
+      return Object.keys(metafile.inputs)
+        .map(file => resolve(root, file))
+        .filter(file => existsSync(file) && statSync(file).isFile() && this.isSubPath(root, file));
+    } catch {
+      return [];
     }
   }
 
-  private shouldSkipCopy(name: string): boolean {
-    return [".git", "node_modules", "dist", ".pnpm-store"].includes(name);
+  private sourceFilesCollectByText(root: string, entry: string): string[] {
+    const files: string[] = [];
+    const pending = [entry];
+    const seen = new Set<string>();
+
+    while (pending.length > 0) {
+      const file = pending.pop();
+      if (!file || seen.has(file)) {
+        continue;
+      }
+      seen.add(file);
+      files.push(file);
+
+      if (!this.shouldParseSourceImports(file)) {
+        continue;
+      }
+
+      for (const importPath of this.sourceImportPaths(readFileSync(file, "utf-8"))) {
+        const resolvedFile = this.resolveSourceImport(root, file, importPath);
+        if (resolvedFile && !seen.has(resolvedFile)) {
+          pending.push(resolvedFile);
+        }
+      }
+    }
+
+    return files.sort((a, b) => a.localeCompare(b));
+  }
+
+  private sourceTsconfigWrite(outDir: string, source: string, sourceRoot: string, files: string[]): void {
+    const include = Array.from(
+      new Set(
+        files
+          .filter(file => [".ts", ".tsx", ".js", ".jsx"].includes(extname(file)))
+          .map(file => relative(outDir, this.sourceTargetPath(outDir, source, sourceRoot, file)).replace(/\\/g, "/")),
+      ),
+    );
+
+    writeFileSync(
+      join(outDir, "tsconfig.json"),
+      `${JSON.stringify(
+        {
+          compilerOptions: {
+            target: "ESNext",
+            module: "ESNext",
+            moduleResolution: "Bundler",
+            strict: true,
+            skipLibCheck: true,
+            esModuleInterop: true,
+            resolveJsonModule: true,
+            jsx: "preserve",
+          },
+          include,
+        },
+        null,
+        2,
+      )}\n`,
+      "utf-8",
+    );
+  }
+
+  private sourcePackageFiles(outDir: string, source: string, sourceRoot: string, files: string[]): string[] {
+    return Array.from(
+      new Set(
+        [
+          ...files.map(file => relative(outDir, this.sourceTargetPath(outDir, source, sourceRoot, file)).replace(/\\/g, "/")),
+          "tsconfig.json",
+        ].filter(file => file !== "package.json").map(file => file.split("/")[0]),
+      ),
+    ).sort((a, b) => a.localeCompare(b));
+  }
+
+  private copySourceFile(outDir: string, source: string, sourceRoot: string, file: string, target: string): void {
+    if (!this.shouldParseSourceImports(file)) {
+      copyFileSync(file, target);
+      return;
+    }
+
+    let text = readFileSync(file, "utf-8");
+    for (const importPath of this.sourceImportPaths(text)) {
+      const resolvedFile = this.resolveSourceImport(source, file, importPath);
+      if (!resolvedFile) {
+        continue;
+      }
+
+      const fromTarget = this.sourceTargetPath(outDir, source, sourceRoot, file);
+      const toTarget = this.sourceTargetPath(outDir, source, sourceRoot, resolvedFile);
+      text = text.split(importPath).join(this.toRelativeImportPath(dirname(fromTarget), toTarget, importPath));
+    }
+    writeFileSync(target, text, "utf-8");
+  }
+
+  private sourceTargetPath(outDir: string, source: string, sourceRoot: string, file: string): string {
+    const relativePath = relative(sourceRoot, file);
+    if (!relativePath.startsWith("..") && !isAbsolute(relativePath)) {
+      return join(outDir, relativePath);
+    }
+    return join(outDir, relative(source, file));
+  }
+
+  private toRelativeImportPath(fromDir: string, toFile: string, originalImportPath: string): string {
+    const originalExt = extname(originalImportPath.split("?")[0]);
+    const targetExt = extname(toFile);
+    const targetPath = originalExt && targetExt
+      ? `${toFile.slice(0, -targetExt.length)}${originalExt}`
+      : originalExt
+        ? `${toFile}${originalExt}`
+      : targetExt
+        ? toFile.slice(0, -targetExt.length)
+        : toFile;
+    const importPath = relative(fromDir, targetPath).replace(/\\/g, "/");
+    return importPath.startsWith(".") ? importPath : `./${importPath}`;
+  }
+
+  private sourceImportPaths(text: string): string[] {
+    const importPaths: string[] = [];
+    const patterns = [
+      /\bimport\s+(?:type\s+)?[\s\S]*?\bfrom\s*["']([^"']+)["']/g,
+      /\bexport\s+(?:type\s+)?[\s\S]*?\bfrom\s*["']([^"']+)["']/g,
+      /\bimport\s*["']([^"']+)["']/g,
+      /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
+      /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g,
+    ];
+
+    for (const pattern of patterns) {
+      for (const match of text.matchAll(pattern)) {
+        importPaths.push(match[1]);
+      }
+    }
+
+    return Array.from(new Set(importPaths));
+  }
+
+  private resolveSourceImport(root: string, fromFile: string, importPath: string): string | undefined {
+    for (const resolvedPath of this.sourceImportBasePaths(root, fromFile, importPath)) {
+      for (const file of this.sourceImportCandidates(resolvedPath)) {
+        if (existsSync(file) && statSync(file).isFile() && this.isSubPath(root, file)) {
+          return file;
+        }
+      }
+    }
+
+    return undefined;
+  }
+
+  private sourceImportBasePaths(root: string, fromFile: string, importPath: string): string[] {
+    const cleanPath = importPath.split("?")[0];
+    if (cleanPath.startsWith(".")) {
+      return [resolve(dirname(fromFile), cleanPath)];
+    }
+
+    return [
+      ...this.sourceTsconfigAliasPaths(root, cleanPath),
+      ...this.sourcePackageSelfPaths(root, cleanPath),
+    ];
+  }
+
+  private sourceTsconfigAliasPaths(root: string, importPath: string): string[] {
+    return this.sourceTsconfigAliases(root).flatMap(alias => {
+      if (!importPath.startsWith(alias.prefix) || !importPath.endsWith(alias.suffix)) {
+        return [];
+      }
+
+      const matchedPath = importPath.slice(alias.prefix.length, importPath.length - alias.suffix.length);
+      return [resolve(alias.baseUrl, `${alias.targetPrefix}${matchedPath}${alias.targetSuffix}`)];
+    });
+  }
+
+  private sourcePackageSelfPaths(root: string, importPath: string): string[] {
+    const pkg = this.readJsonFile<{ name?: string }>(join(root, "package.json"));
+    if (!pkg?.name || (importPath !== pkg.name && !importPath.startsWith(`${pkg.name}/`))) {
+      return [];
+    }
+
+    return [resolve(root, importPath === pkg.name ? "." : importPath.slice(pkg.name.length + 1))];
+  }
+
+  private sourceTsconfigAliases(root: string): SourcePathAlias[] {
+    const tsconfigPath = this.sourceTsconfigPath(root);
+    if (!tsconfigPath) {
+      return [];
+    }
+
+    const tsconfig = this.sourceJsonFileRead<{
+      compilerOptions?: {
+        baseUrl?: string;
+        paths?: Record<string, string[]>;
+      };
+    }>(tsconfigPath);
+    const compilerOptions = tsconfig?.compilerOptions;
+    if (!compilerOptions?.paths) {
+      return [];
+    }
+
+    const baseUrl = resolve(dirname(tsconfigPath), compilerOptions.baseUrl ?? ".");
+    return Object.entries(compilerOptions.paths).flatMap(([aliasPath, targetPaths]) => {
+      const aliasStarIndex = aliasPath.indexOf("*");
+      const prefix = aliasStarIndex >= 0 ? aliasPath.slice(0, aliasStarIndex) : aliasPath;
+      const suffix = aliasStarIndex >= 0 ? aliasPath.slice(aliasStarIndex + 1) : "";
+
+      return targetPaths.map(targetPath => {
+        const targetStarIndex = targetPath.indexOf("*");
+        return {
+          prefix,
+          suffix,
+          targetPrefix: targetStarIndex >= 0 ? targetPath.slice(0, targetStarIndex) : targetPath,
+          targetSuffix: targetStarIndex >= 0 ? targetPath.slice(targetStarIndex + 1) : "",
+          baseUrl,
+        };
+      });
+    });
+  }
+
+  private sourceTsconfigPath(root: string): string | undefined {
+    for (const name of ["tsconfig.app.json", "tsconfig.json"]) {
+      const file = join(root, name);
+      if (existsSync(file)) {
+        return file;
+      }
+    }
+    return undefined;
+  }
+
+  private sourceJsonFileRead<T>(filePath: string): T | undefined {
+    if (!existsSync(filePath)) {
+      return undefined;
+    }
+    return JSON.parse(this.jsonCommentsRemove(readFileSync(filePath, "utf-8"))) as T;
+  }
+
+  private jsonCommentsRemove(text: string): string {
+    return text
+      .replace(/^\uFEFF/, "")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/.*$/gm, "$1");
+  }
+
+  private sourceImportCandidates(resolvedPath: string): string[] {
+    const extensions = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json", ".d.ts", ".css", ".scss", ".sass", ".less", ".vue", ".svelte"];
+    const currentExt = extname(resolvedPath);
+    const basePath = currentExt ? resolvedPath.slice(0, -currentExt.length) : resolvedPath;
+    const fileCandidates = currentExt
+      ? [resolvedPath, ...[".js", ".jsx", ".mjs", ".cjs"].includes(currentExt) ? extensions.map(ext => `${basePath}${ext}`) : []]
+      : extensions.map(ext => `${resolvedPath}${ext}`);
+
+    return [
+      ...fileCandidates,
+      ...extensions.map(ext => join(resolvedPath, `index${ext}`)),
+    ];
+  }
+
+  private shouldParseSourceImports(file: string): boolean {
+    return [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte"].includes(extname(file));
+  }
+
+  private isSubPath(root: string, file: string): boolean {
+    const relativePath = relative(root, file);
+    return Boolean(relativePath) && !relativePath.startsWith("..") && !isAbsolute(relativePath);
   }
 }
 

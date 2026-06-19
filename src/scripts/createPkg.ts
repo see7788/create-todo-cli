@@ -6,23 +6,24 @@ import prompts from 'prompts';
 import degit from 'degit';
 import LibBase, { Appexit } from "./tool.js";
 
+type CreateTarget = {
+  name: string;
+  path: string;
+};
+
 class CreatePkg extends LibBase {
   private readonly templates: [name: string, remark: string][] = [
     ['see7788/electron-template', '牛x的electron脚手架'],
     ['see7788/ts-template', 'typescript基本脚手架'],
   ];
-  private validProjectName!: string;
+  private target!: CreateTarget;
   private templatesIndex!: number;
   private targetCreated = false;
-
-  private get targetPath(): string {
-    return path.resolve(this.validProjectName);
-  }
 
   async task1(initialProjectName?: string): Promise<void> {
     try {
       console.log('\n✅ 开始项目创建流程');
-      this.validProjectName = await this.confirmOutputName({
+      this.target = await this.confirmOutputTarget({
         initialName: initialProjectName,
         defaultName: "my-app",
         message: "请输入项目名",
@@ -32,11 +33,11 @@ class CreatePkg extends LibBase {
       await this.templatesIndexSet();
       await this.createFromdegit();
       this.targetCreated = true;
-      await this.finalizeProjectOutput(this.targetPath, this.validProjectName);
+      await this.finalizeProjectOutput(this.target.path, this.target.name);
       console.log('\n🎉 完成项目创建流程');
-      console.log(`📁 项目路径: ${path.resolve(this.targetPath)}`);
+      console.log(`📁 项目路径: ${path.resolve(this.target.path)}`);
       console.log('\n💡 下一步操作:');
-      console.log(`   cd ${this.validProjectName}`);
+      console.log(`   cd ${this.target.name}`);
       console.log('   pnpm install');
       console.log('   pnpm run dev');
     } catch (error: unknown) {
@@ -64,7 +65,7 @@ class CreatePkg extends LibBase {
 
   private async createFromdegit(): Promise<void> {
     const repoUrl = this.templates[this.templatesIndex][0];
-    console.log(`\n🚀 创建项目: ${this.validProjectName}`);
+    console.log(`\n🚀 创建项目: ${this.target.name}`);
     console.log(`📦 使用 degit 从 ${repoUrl} 获取模板...\n`);
 
     const emitter = degit(repoUrl, {
@@ -75,18 +76,18 @@ class CreatePkg extends LibBase {
 
     emitter.on('info', info => console.log(`📝 ${info.message}`));
     emitter.on('warn', warn => console.warn(`⚠️ ${warn.message}`));
-    await emitter.clone(this.targetPath);
+    await emitter.clone(this.target.path);
     console.log('🧹 已自动移除 .git 目录（degit 特性）');
     console.log('\n✅ 项目创建成功！');
   }
 
   private async targetPathDEl(): Promise<void> {
     try {
-      if (!this.targetCreated || !this.validProjectName) {
+      if (!this.targetCreated || !this.target) {
         return;
       }
 
-      const targetPath = this.targetPath;
+      const targetPath = this.target.path;
       if (targetPath === process.cwd() || targetPath === path.parse(targetPath).root) {
         return;
       }

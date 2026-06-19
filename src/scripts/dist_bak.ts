@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// 备份：旧版 tsupBuild 实现。它不是抽离 TS 源码，而是将入口 bundle 成 JS 并生成 d.ts。
+// 保留用于对比当前 distPkgBundle；后续重构可参考这里的 tsupBuild API + metafile 写法。
 import * as fs from 'node:fs';
 import path from 'path';
 import type { PackageJson } from 'type-fest';
@@ -158,9 +160,11 @@ class DistPackageBuilder extends LibBase {
     console.log("开始提取依赖")
     const imported = new Set<string>()
     for (const key in metafile.inputs) {
-      const matches = key.matchAll(/node_modules[/\\](?:\.pnpm[/\\])?((?:@[^/\\]+[/\\][^/\\]+)|[^/\\]+)/g)
-      for (const match of matches) {
-        imported.add(match[1].replace(/@[^/\\]+$/, ""))
+      const segs = key.match(/node_modules[/\\](?:\.pnpm[/\\])?(?:@[^/\\]+[/\\][^/\\]+|[^/\\]+)/g)
+      if (!segs) continue
+      for (const seg of segs) {
+        const libname = seg.split(/[/\\]/).pop()
+        if (libname) imported.add(libname)
       }
     }
     const rootPkg = this.cwdProjectInfo.jsonInfo

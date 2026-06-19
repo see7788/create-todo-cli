@@ -18,18 +18,19 @@ export class Appexit extends Error {
 }
 interface cwdProjectInfo_t {
     pkgPath: string;
+    workspacePath: string;
     jsonInfo: PackageJson;
     jsonPath: string,
     cwdPath: string
 }
 
-export type GithubPublishConfig = {
+type GithubPublishConfig = {
     packageName: string;
     targetPath: string;
     workingDirectory?: string;
 };
 
-export type ConfirmOutputNameOptions = {
+type ConfirmOutputNameOptions = {
     initialName?: string;
     defaultName: string;
     message: string;
@@ -37,7 +38,21 @@ export type ConfirmOutputNameOptions = {
     existsError?: boolean;
 };
 
-export type PackageJsonRecord = {
+type OutputTarget = {
+    name: string;
+    path: string;
+};
+
+type LocalPathMode = "directory" | "file";
+
+type LocalPathOptions = {
+    fileExtensions?: string[];
+    initialPath?: string;
+    mode: LocalPathMode;
+    shouldConfirm?: boolean;
+};
+
+type PackageJsonRecord = {
     name?: string;
     version?: string;
     description?: string;
@@ -56,7 +71,7 @@ export type PackageJsonRecord = {
     dependencies?: Record<string, string>;
 } & Record<string, unknown>;
 
-export type ProjectIdentity = {
+type ProjectIdentity = {
     packageName: string;
     repositoryName: string;
     author?: string;
@@ -80,17 +95,32 @@ export default class LibBase {
 
     /**获取当前工作目录的项目信息 - 递归查找package.json*/
     private getcwdProjectInfo(): cwdProjectInfo_t {
-        let dir = process.cwd();
-        while (dir !== path.parse(dir).root) {
-            const jsonPath = path.join(dir, 'package.json');
-            if (fs.existsSync(jsonPath)) {
-                const pkgContent = fs.readFileSync(jsonPath, 'utf-8');
-                const jsonInfo: PackageJson = JSON.parse(pkgContent);
-                return { pkgPath: dir, cwdPath: process.cwd(), jsonPath: jsonPath, jsonInfo };
+        const cwdPath = process.cwd();
+        let dir = cwdPath;
+        let pkgPath: string | undefined;
+        let workspacePath: string | undefined;
+        let jsonInfo: PackageJson | undefined;
+        let jsonPath = "";
+        while (true) {
+            const candidateJsonPath = path.join(dir, 'package.json');
+            if (fs.existsSync(candidateJsonPath)) {
+                const pkgContent = fs.readFileSync(candidateJsonPath, 'utf-8');
+                const candidateJsonInfo = JSON.parse(pkgContent) as PackageJson;
+                if (!jsonInfo) {
+                    pkgPath = dir;
+                    jsonPath = candidateJsonPath;
+                    jsonInfo = candidateJsonInfo;
+                }
+                workspacePath = dir;
             }
-            dir = path.dirname(dir);
+            const parentDir = path.dirname(dir);
+            if (parentDir === dir) break;
+            dir = parentDir;
         }
-        throw new Appexit('不存在 package.json 文件');
+        if (!jsonInfo || !pkgPath || !workspacePath) {
+            throw new Appexit('不存在 package.json 文件');
+        }
+        return { pkgPath, workspacePath, cwdPath, jsonPath, jsonInfo };
     }
 
     /**执行Git命令并处理错误 - 统一Git操作的错误处理（工具方法）*/
@@ -149,7 +179,15 @@ export default class LibBase {
         }
     }
 
-    /**从盘符路径直至选择文件的交互式方法 - 支持多级目录导航和文件选择 */
+    protected async confirmOutputTarget(options: ConfirmOutputNameOptions): Promise<OutputTarget> {
+        const name = await this.confirmOutputName(options);
+        return {
+            name,
+            path: path.resolve(this.cwdProjectInfo.cwdPath, name),
+        };
+    }
+
+    /**确认输出名称 - 支持命令行传入、默认值、名称校验和目标路径确认 */
     protected async confirmOutputName(options: ConfirmOutputNameOptions): Promise<string> {
         let name = options.initialName?.trim() || "";
         while (true) {
@@ -289,7 +327,7 @@ export default class LibBase {
     }
 
     private async pnpmRootSetupAsk(): Promise<void> {
-        if (this.isPnpmWorkspaceRoot(process.cwd())) {
+        if (this.isPnpmWorkspaceRoot(this.cwdProjectInfo.workspacePath)) {
             console.log("当前目录已经是 pnpm workspace 根");
             return;
         }
@@ -342,7 +380,7 @@ export default class LibBase {
     }
 
     private pnpmWorkspaceFileSet(): void {
-        const filePath = path.join(process.cwd(), "pnpm-workspace.yaml");
+        const filePath = path.join(this.cwdProjectInfo.workspacePath, "pnpm-workspace.yaml");
         if (fs.existsSync(filePath)) {
             return;
         }
@@ -353,11 +391,11 @@ export default class LibBase {
     }
 
     private npmrcSet(): void {
-        this.linesFileEnsure(path.join(process.cwd(), ".npmrc"), ["store-dir=./.pnpm-store"]);
+        this.linesFileEnsure(path.join(this.cwdProjectInfo.workspacePath, ".npmrc"), ["store-dir=./.pnpm-store"]);
     }
 
     private gitignoreSet(): void {
-        this.linesFileEnsure(path.join(process.cwd(), ".gitignore"), [
+        this.linesFileEnsure(path.join(this.cwdProjectInfo.workspacePath, ".gitignore"), [
             ".pnpm-store/**",
             "**/node_modules/**",
             "**/dist/**",
@@ -367,9 +405,9 @@ export default class LibBase {
     }
 
     private rootPackageJsonSet(): void {
-        const filePath = path.join(process.cwd(), "package.json");
+        const filePath = path.join(this.cwdProjectInfo.workspacePath, "package.json");
         const pkg = this.readJsonFile<PackageJsonRecord>(filePath) ?? {
-            name: path.basename(process.cwd()),
+            name: path.basename(this.cwdProjectInfo.workspacePath),
             version: "1.0.0",
             private: true,
         };
@@ -562,9 +600,29 @@ jobs:
         }
     }
 
-    protected async askLocalFilePath(fileExtensions: string[] = ['.js', '.jsx', '.ts', '.tsx'], initialPath?: string): Promise<string> {
+    protected async askLocalFilePath(fileExtensions: string[] = ['.js', '.jsx', '.ts', '.tsx'], initialPath?: string, shouldConfirm = true): Promise<string> {
+        return this.askLocalPath({
+            fileExtensions,
+            initialPath,
+            mode: "file",
+            shouldConfirm,
+        });
+    }
+
+    protected async askLocalDirectoryPath(initialPath?: string, shouldConfirm = true): Promise<string> {
+        return this.askLocalPath({
+            initialPath,
+            mode: "directory",
+            shouldConfirm,
+        });
+    }
+
+    protected async askLocalPath(options: LocalPathOptions): Promise<string> {
         const prompts = await import('prompts');
-        console.log('📁 开始文件选择...');
+        const modeName = options.mode === "file" ? "文件" : "目录";
+        const fileExtensions = options.fileExtensions ?? ['.js', '.jsx', '.ts', '.tsx'];
+        const shouldConfirm = options.shouldConfirm ?? true;
+        console.log(`📁 开始${modeName}选择...`);
 
         // 首先获取可用的磁盘驱动器
         let availableDrives: string[] = [];
@@ -592,15 +650,15 @@ jobs:
         }
 
         // 如果提供了初始路径，直接使用它
-        let currentPath = initialPath || process.cwd();
+        let currentPath = options.initialPath || process.cwd();
 
         // 如果没有初始路径，让用户选择磁盘/根目录
-        if (!initialPath) {
+        if (!options.initialPath) {
             console.log('\n🔍 第1步：选择磁盘驱动器');
             const driveResponse = await prompts.default({
                 type: 'select',
                 name: 'drive',
-                message: '请选择要查找文件的磁盘驱动器',
+                message: `请选择要查找${modeName}的磁盘驱动器`,
                 choices: availableDrives.map(drive => ({
                     title: drive === process.cwd().split(':')[0] + ':' ? `${drive} (当前磁盘)` : drive,
                     value: drive
@@ -616,7 +674,7 @@ jobs:
             currentPath = driveResponse.drive;
         }
 
-        let navigationLevel = initialPath ? 1 : 2; // 导航层级计数
+        let navigationLevel = options.initialPath ? 1 : 2; // 导航层级计数
 
         // 多级导航选择目录和文件
         while (true) {
@@ -684,7 +742,8 @@ jobs:
             const specialChoices = [
                 { title: '.. (上一级目录)', value: '..' },
                 { title: '🏠 当前工作目录', value: 'current' },
-                { title: '❌ 取消选择', value: 'cancel' }
+                ...(options.mode === "directory" ? [{ title: '✅ 选择当前目录', value: 'select-current' }] : []),
+                { title: '❌ 取消选择', value: 'cancel' },
             ];
 
             // 构建文件/文件夹选项
@@ -697,7 +756,7 @@ jobs:
                             ? `🎯 ${item.name} (目标文件)`
                             : `📄 ${item.name}`,
                     value: item.path,
-                    disabled: !item.isDirectory && !isTargetFile // 禁用非目标文件类型
+                    disabled: options.mode === "directory" ? !item.isDirectory : !item.isDirectory && !isTargetFile
                 };
             });
 
@@ -708,7 +767,7 @@ jobs:
             const selectionResponse = await prompts.default({
                 type: 'select',
                 name: 'selection',
-                message: `\n当前位置: ${currentPath}\n请选择一个目录进入，或选择一个目标文件`,
+                message: `\n当前位置: ${currentPath}\n请选择一个目录进入${options.mode === "file" ? "，或选择一个目标文件" : "，或选择当前目录"}`,
                 choices
             });
 
@@ -725,6 +784,24 @@ jobs:
             } else if (selectionResponse.selection === 'current') {
                 currentPath = process.cwd();
                 console.log(`📂 已切换到当前工作目录: ${currentPath}`);
+                continue;
+            } else if (selectionResponse.selection === 'select-current') {
+                if (!shouldConfirm) {
+                    console.log(`\n✅ 已选择目录: ${currentPath}`);
+                    return currentPath;
+                }
+
+                const confirmResponse = await prompts.default({
+                    type: 'confirm',
+                    name: 'confirm',
+                    message: `\n已选择目录: ${currentPath}\n是否确认使用此目录？`,
+                    initial: true,
+                });
+
+                if (confirmResponse.confirm) {
+                    console.log(`\n✅ 已选择目录: ${currentPath}`);
+                    return currentPath;
+                }
                 continue;
             } else if (selectionResponse.selection === '..') {
                 // 向上一级
@@ -753,6 +830,11 @@ jobs:
                     );
 
                     if (isTargetFile) {
+                        if (!shouldConfirm) {
+                            console.log(`\n✅ 已选择文件: ${selectionResponse.selection}`);
+                            return selectionResponse.selection;
+                        }
+
                         // 确认选择
                         const confirmResponse = await prompts.default({
                             type: 'confirm',
