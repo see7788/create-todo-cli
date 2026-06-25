@@ -1,3 +1,4 @@
+{{=<% %>=}}
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -5,10 +6,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const wrapperDir = dirname(fileURLToPath(import.meta.url));
-const packageRoot = resolve(wrapperDir, "..");
-const entry = resolve(wrapperDir, "../src/index.ts");
+const packageRoot = resolve(wrapperDir, <%{rootRelativePathJson}%>);
+const entry = resolve(wrapperDir, <%{entryRelativePathJson}%>);
 const tsx = join(packageRoot, "node_modules", "tsx", "dist", "cli.mjs");
-const commandName = "create-todo-cli";
+const commandName = <%{commandNameJson}%>;
 const commandArg = process.argv[2];
 const command = commandArg === "dev" || commandArg === "start" || commandArg === "stop" || commandArg === "restart"
   ? commandArg

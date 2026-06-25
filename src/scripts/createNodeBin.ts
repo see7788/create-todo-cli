@@ -1,5 +1,6 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import prompts from "prompts";
 import LibBase from "./public.js";
 
@@ -19,60 +20,108 @@ type NodeBinTarget = {
 };
 
 class CreateNodeBin extends LibBase {
-  public async task1(): Promise<void> {
+  public async task1(initialCommandName?: string): Promise<void> {
     const packageJsonPath = this.packagePath("package.json");
     const pkg = this.readRequiredJsonFile<NodeBinPackageJson>(packageJsonPath);
-    const target = await this.nodeBinTargetAsk(pkg);
+    const target = await this.nodeBinTargetAsk(pkg, initialCommandName);
     const wrapperPath = this.packagePath(target.wrapperPath);
 
     this.nodeBinWrapperWrite(target);
     this.packageJsonSet(packageJsonPath, pkg, target);
-    this.pnpmLinkRun();
+    const linkedFiles = this.pnpmLinkRun(pkg);
 
-    console.log(`已生成 node bin wrapper: ${this.pathDisplay(wrapperPath)}`);
-    console.log(`入口文件: ${target.entryPath}`);
-    console.log(`package.json: ${this.pathDisplay(packageJsonPath)}`);
-    console.log(`命令: ${this.lifecycleCommandNames(target.commandName).join(", ")}`);
-    console.log("已执行 pnpm link");
+    console.log("init package bin complete");
+    console.log(`entry: ${target.entryPath}`);
+    console.log(`wrapper: ${wrapperPath}`);
+    console.log(`command: ${target.commandName} [dev|start|stop|restart]`);
+    console.log("changed files:");
+    console.log(`- ${this.pathDisplay(packageJsonPath)}`);
+    console.log(`- ${this.pathDisplay(wrapperPath)}`);
+    console.log("linked files:");
+    for (const filePath of linkedFiles) {
+      console.log(`- ${filePath}`);
+    }
   }
 
-  private async nodeBinTargetAsk(pkg: NodeBinPackageJson): Promise<NodeBinTarget> {
-    const entryPath = await this.askLocalFilePath([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"], this.cwdProjectInfo.cwdPath, false);
+  private async nodeBinTargetAsk(pkg: NodeBinPackageJson, initialCommandName?: string): Promise<NodeBinTarget> {
+    const entryPath = await this.entryPathAsk();
     const entryRelativePath = this.packageRelativePath(entryPath);
     if (entryRelativePath.startsWith("..") || isAbsolute(entryRelativePath)) {
       throw new Error("bin 入口文件必须位于当前项目内");
     }
 
-    const commandName = this.commandNameDefault(pkg);
+    const commandName = await this.commandNameAsk(pkg, initialCommandName);
     const wrapperPath = this.wrapperPathDefault(commandName, pkg);
     const target = {
       commandName,
       wrapperPath,
       entryPath,
     };
-    const confirmed = await prompts({
-      type: "confirm",
-      name: "value",
-      message: [
-        `入口文件: ${target.entryPath}`,
-        `wrapper: ${this.packagePath(target.wrapperPath)}`,
-        `命令: ${this.lifecycleCommandNames(target.commandName).join(", ")}`,
-        "是否生成并执行 pnpm link？",
-      ].join("\n"),
-      initial: true,
-    });
-    if (confirmed.value === undefined) {
-      throw new Error("user-cancelled");
-    }
-    if (!confirmed.value) {
-      throw new Error("user-cancelled");
-    }
     return target;
+  }
+
+  private async commandNameAsk(pkg: NodeBinPackageJson, initialCommandName?: string): Promise<string> {
+    if (initialCommandName) {
+      return this.commandNameNormalize(initialCommandName);
+    }
+    return this.commandNameDefault(pkg);
+  }
+
+  private commandNameNormalize(commandName: string): string {
+    const normalizedName = this.toPackageName(commandName.trim());
+    if (!normalizedName) {
+      throw new Error("Command name is empty");
+    }
+    return normalizedName;
+  }
+
+  private async entryPathAsk(): Promise<string> {
+    const response = await prompts({
+      type: "text",
+      name: "entryPath",
+      message: "Entry file path or directory",
+      initial: this.entryPathDefault(),
+    });
+    if (!response.entryPath) {
+      throw new Error("user-cancelled");
+    }
+
+    return this.entryPathResolve(String(response.entryPath).trim());
+  }
+
+  private entryPathDefault(): string {
+    for (const relativePath of ["src/index.ts", "src/index.tsx", "src/index.js", "index.ts", "index.js"]) {
+      const filePath = this.packagePath(relativePath);
+      if (existsSync(filePath) && statSync(filePath).isFile()) {
+        return filePath;
+      }
+    }
+    return this.packagePath("src/index.ts");
+  }
+
+  private entryPathResolve(inputPath: string): string {
+    const resolvedPath = resolve(inputPath);
+    if (existsSync(resolvedPath) && statSync(resolvedPath).isDirectory()) {
+      for (const fileName of ["index.ts", "index.tsx", "index.js", "index.jsx", "index.mjs", "index.cjs"]) {
+        const candidate = join(resolvedPath, fileName);
+        if (existsSync(candidate) && statSync(candidate).isFile()) {
+          return candidate;
+        }
+      }
+      throw new Error(`No entry file found in directory: ${resolvedPath}`);
+    }
+
+    if (!existsSync(resolvedPath) || !statSync(resolvedPath).isFile()) {
+      throw new Error(`Entry file not found: ${resolvedPath}`);
+    }
+    if (![".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].some(ext => resolvedPath.endsWith(ext))) {
+      throw new Error(`Unsupported entry file: ${resolvedPath}`);
+    }
+    return resolvedPath;
   }
 
   private commandNameDefault(pkg: NodeBinPackageJson): string {
     const existingCommandName = this.binCommandNames(pkg)
-      .map(commandName => commandName.replace(/-(dev|start|stop|restart)$/, ""))
       .find(Boolean);
     return existingCommandName ?? this.toPackageName(pkg.name ?? basename(this.cwdProjectInfo.pkgPath));
   }
@@ -103,7 +152,7 @@ class CreateNodeBin extends LibBase {
       `#!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const wrapperDir = dirname(fileURLToPath(import.meta.url));
@@ -112,21 +161,10 @@ const entry = resolve(wrapperDir, ${JSON.stringify(entryRelativePath)});
 const tsx = join(packageRoot, "node_modules", "tsx", "dist", "cli.mjs");
 const commandName = ${JSON.stringify(target.commandName)};
 const commandArg = process.argv[2];
-const binName = basename(process.argv[1] ?? "");
-const lifecycleCommandFromArg = commandArg === "dev" || commandArg === "start" || commandArg === "stop" || commandArg === "restart"
+const command = commandArg === "dev" || commandArg === "start" || commandArg === "stop" || commandArg === "restart"
   ? commandArg
   : undefined;
-const lifecycleCommandFromBin = binName.endsWith("-stop")
-  ? "stop"
-  : binName.endsWith("-start")
-    ? "start"
-  : binName.endsWith("-restart")
-    ? "restart"
-  : binName.endsWith("-dev")
-    ? "dev"
-    : undefined;
-const command = lifecycleCommandFromArg ?? lifecycleCommandFromBin;
-const passthroughArgs = lifecycleCommandFromArg ? process.argv.slice(3) : process.argv.slice(2);
+const passthroughArgs = command ? process.argv.slice(3) : process.argv.slice(2);
 
 if (!existsSync(tsx)) {
   console.error("缺少 tsx，请先安装依赖");
@@ -289,10 +327,7 @@ child.once("exit", (code, signal) => {
 
   private packageJsonSet(packageJsonPath: string, pkg: NodeBinPackageJson, target: NodeBinTarget): void {
     const wrapperPackagePath = `./${target.wrapperPath.replace(/\\/g, "/").replace(/^\.\//, "")}`;
-    pkg.bin = {
-      ...(pkg.bin && typeof pkg.bin === "object" ? pkg.bin : {}),
-      ...Object.fromEntries(this.lifecycleCommandNames(target.commandName).map(commandName => [commandName, wrapperPackagePath])),
-    };
+    pkg.bin = { [target.commandName]: wrapperPackagePath };
     pkg.files = this.packageFilesNext(pkg.files, target);
 
     const tsxVersion = pkg.dependencies?.tsx ?? pkg.devDependencies?.tsx ?? "^4.20.6";
@@ -310,7 +345,7 @@ child.once("exit", (code, signal) => {
     this.writeJsonFile(packageJsonPath, pkg);
   }
 
-  private pnpmLinkRun(): void {
+  private pnpmLinkRun(pkg: NodeBinPackageJson): string[] {
     const cwd = process.cwd();
     try {
       process.chdir(this.cwdProjectInfo.pkgPath);
@@ -318,6 +353,107 @@ child.once("exit", (code, signal) => {
     } finally {
       process.chdir(cwd);
     }
+    return this.globalBinLinksWrite(pkg);
+  }
+
+  private globalBinLinksWrite(pkg: NodeBinPackageJson): string[] {
+    const binEntries = this.binEntries(pkg);
+    if (binEntries.length === 0) {
+      throw new Error("package.json bin is empty");
+    }
+
+    const globalBin = execSync("pnpm bin -g", {
+      cwd: this.cwdProjectInfo.pkgPath,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    if (!globalBin) {
+      throw new Error("Cannot resolve pnpm global bin directory");
+    }
+
+    mkdirSync(globalBin, { recursive: true });
+    const commandNames = new Set(binEntries.map(([commandName]) => commandName));
+    const removedFiles = this.globalBinStaleLinksRemove(globalBin, commandNames);
+    const linkedFiles: string[] = [];
+    for (const [commandName, binPath] of binEntries) {
+      const wrapperPath = resolve(this.cwdProjectInfo.pkgPath, binPath);
+      const commandPath = resolve(globalBin, commandName);
+      writeFileSync(commandPath, `#!/usr/bin/env sh
+exec node ${JSON.stringify(wrapperPath)} "$@"
+`, "utf-8");
+      linkedFiles.push(commandPath);
+      try {
+        chmodSync(commandPath, 0o755);
+      } catch {
+        // chmod is best-effort on Windows.
+      }
+
+      if (process.platform === "win32") {
+        writeFileSync(`${commandPath}.cmd`, `@ECHO off\r\nnode ${JSON.stringify(wrapperPath)} %*\r\n`, "utf-8");
+        writeFileSync(`${commandPath}.ps1`, `& node ${JSON.stringify(wrapperPath)} @args\r\nexit $LASTEXITCODE\r\n`, "utf-8");
+        linkedFiles.push(`${commandPath}.cmd`, `${commandPath}.ps1`);
+      }
+
+      console.log(`linked command: ${commandName} -> ${wrapperPath}`);
+    }
+    return [...removedFiles.map(filePath => `removed ${filePath}`), ...linkedFiles];
+  }
+
+  private globalBinStaleLinksRemove(globalBin: string, commandNames: Set<string>): string[] {
+    const packagePath = this.pathNormalize(this.cwdProjectInfo.pkgPath);
+    const removedFiles: string[] = [];
+    const knownExtensions = ["", ".cmd", ".ps1"];
+    for (const filePath of this.globalBinFiles(globalBin)) {
+      const commandName = this.globalBinCommandName(filePath);
+      if (!commandName || commandNames.has(commandName)) {
+        continue;
+      }
+      if (!this.globalBinFileBelongsToPackage(filePath, packagePath)) {
+        continue;
+      }
+
+      for (const extension of knownExtensions) {
+        const linkedFile = resolve(globalBin, `${commandName}${extension}`);
+        if (existsSync(linkedFile)) {
+          rmSync(linkedFile, { force: true });
+          removedFiles.push(linkedFile);
+        }
+      }
+    }
+    return removedFiles;
+  }
+
+  private globalBinFiles(globalBin: string): string[] {
+    return readdirSync(globalBin, { withFileTypes: true })
+      .filter(item => item.isFile())
+      .map(item => resolve(globalBin, item.name));
+  }
+
+  private globalBinCommandName(filePath: string): string | undefined {
+    const fileName = basename(filePath);
+    return fileName.replace(/\.(cmd|ps1)$/i, "");
+  }
+
+  private globalBinFileBelongsToPackage(filePath: string, packagePath: string): boolean {
+    try {
+      return this.pathNormalize(readFileSync(filePath, "utf-8")).includes(packagePath);
+    } catch {
+      return false;
+    }
+  }
+
+  private pathNormalize(filePath: string): string {
+    return filePath.replace(/\\/g, "/").toLowerCase();
+  }
+
+  private binEntries(pkg: NodeBinPackageJson): [string, string][] {
+    if (typeof pkg.bin === "string") {
+      return [[this.toPackageName(pkg.name ?? basename(this.cwdProjectInfo.pkgPath)), pkg.bin]];
+    }
+    if (pkg.bin && typeof pkg.bin === "object") {
+      return Object.entries(pkg.bin);
+    }
+    return [];
   }
 
   private packageFilesNext(files: string[] | undefined, target: NodeBinTarget): string[] {
@@ -332,10 +468,6 @@ child.once("exit", (code, signal) => {
     const normalizedPath = filePath.replace(/\\/g, "/").replace(/^\.\//, "");
     const [topPath, ...childPaths] = normalizedPath.split("/");
     return childPaths.length > 0 ? `${topPath}/` : normalizedPath;
-  }
-
-  private lifecycleCommandNames(commandName: string): string[] {
-    return [commandName, `${commandName}-dev`, `${commandName}-start`, `${commandName}-stop`, `${commandName}-restart`];
   }
 
   private nodeImportPath(fromDir: string, toFile: string): string {

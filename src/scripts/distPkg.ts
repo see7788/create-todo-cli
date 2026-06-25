@@ -50,15 +50,17 @@ class DistPkg extends LibBase {
   private entryIndex = "";
 
   public async task1(initialPackageName?: string, initialMode?: DistPkgMode): Promise<void> {
-    this.target = await this.confirmOutputTarget({
-      basePath: this.cwdProjectInfo.pkgPath,
+    const targetName = await this.confirmOutputName({
+      basePath: dirname(this.cwdProjectInfo.pkgPath),
       initialName: initialPackageName,
-      defaultName: "dist",
+      defaultName: `${basename(this.cwdProjectInfo.pkgPath)}_dist`,
       message: "请输入 npm 包输出目录名",
       targetLabel: "将创建 npm 包产物到",
     });
-
-    const mode = initialMode ?? await this.modeAsk();
+    this.target = {
+      name: targetName,
+      path: resolve(dirname(this.cwdProjectInfo.pkgPath), targetName),
+    };    const mode = initialMode ?? await this.modeAsk();
     if (mode === "source") {
       this.entryIndex = await this.askLocalFilePath([".js", ".jsx", ".ts", ".tsx", ".cjs", ".mjs", ".json"], this.cwdProjectInfo.cwdPath);
       const result = this.copySourceProject(
@@ -80,6 +82,7 @@ class DistPkg extends LibBase {
     });
 
     console.log(`\n完成 npm 包抽取: ${this.pathDisplay(result.dist)}`);
+    console.log(`入口文件: ${this.entryIndex}`);
     console.log(`package.json: ${result.packageJson}`);
     await this.finalizeProjectOutput(result.dist, this.toPackageName(basename(result.dist)));
   }
@@ -618,6 +621,17 @@ class DistPkg extends LibBase {
 
   private shouldParseSourceImports(file: string): boolean {
     return [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte"].includes(extname(file));
+  }
+
+  private findPackageRoot(filePath: string): string {
+    let dir = statSync(filePath).isDirectory() ? filePath : dirname(filePath);
+    while (dirname(dir) !== dir) {
+      if (existsSync(join(dir, "package.json"))) {
+        return dir;
+      }
+      dir = dirname(dir);
+    }
+    throw new Appexit(`package.json not found from: ${filePath}`);
   }
 
   private isSubPath(root: string, file: string): boolean {

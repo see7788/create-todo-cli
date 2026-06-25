@@ -1,14 +1,15 @@
 import type { PackageJson } from 'type-fest';
 import path from 'path';
 import fs from "fs"
-import { execSync, ExecSyncOptionsWithStringEncoding } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import type prompts from 'prompts';
+import Mustache from 'mustache';
+import PublishYml from './publishYml.js';
 
-/**应用程序退出错误类 - 用于表示程序无法处理的致命异常情况*/
+/** Application exit error. */
 export class Appexit extends Error {
     /**
-     * 构造应用程序退出错误
-     * @param message 错误消息，描述发生的错误
+     * @param message Error message.
      */
     constructor(message: string) {
         super(message);
@@ -24,12 +25,6 @@ interface cwdProjectInfo_t {
     cwdPath: string
 }
 
-type GithubPublishConfig = {
-    packageName: string;
-    targetPath: string;
-    workingDirectory?: string;
-};
-
 type ConfirmOutputNameOptions = {
     basePath?: string;
     initialName?: string;
@@ -37,11 +32,6 @@ type ConfirmOutputNameOptions = {
     message: string;
     targetLabel: string;
     existsError?: boolean;
-};
-
-type OutputTarget = {
-    name: string;
-    path: string;
 };
 
 type LocalPathMode = "directory" | "file";
@@ -87,15 +77,446 @@ type GitHubRepo = {
     owner: string;
     repo: string;
 };
+
+type TplBinCommandContext = {
+    commandName: string;
+    entryRelativePath: string;
+    rootRelativePath: string;
+};
+
+type TplPublishJobContext = {
+    pnpmVersion: string;
+    workingDirectory?: string;
+};
+
+/** 文件模板集中出口 - 先不接入调用方，只收敛散落的完整文件文本。 */
+export class TplBase {
+    public package_json_create(packageName: string): string {
+        return this.tplRender(`{
+  "name": {{{packageNameJson}}},
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "module": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0"
+  }
+}
+`, {
+            packageNameJson: JSON.stringify(packageName),
+        });
+    }
+
+    public tsconfig_json_create(): string {
+        return `{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true
+  },
+  "include": [
+    "src"
+  ]
+}
+`;
+    }
+
+    public index_ts_create(): string {
+        return `export {};
+`;
+    }
+
+    public README_md_create(packageName: string): string {
+        return this.tplRender(`# {{{packageName}}}
+`, { packageName });
+    }
+
+    public pnpm_workspace_yaml_create(): string {
+        return `packages:
+  - "libs/*"
+  - "apps/*"
+`;
+    }
+
+    public pnpm_workspace_yaml_release_create(packagePaths: string[]): string {
+        return `packages:
+${packagePaths.map(packagePath => `  - "${packagePath}"`).join("\n")}
+`;
+    }
+
+    public bin_command_js_create(context: TplBinCommandContext): string {
+        return this.tplRender(`#!/usr/bin/env node
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const wrapperDir = dirname(fileURLToPath(import.meta.url));
+const packageRoot = resolve(wrapperDir, {{{rootRelativePathJson}}});
+const entry = resolve(wrapperDir, {{{entryRelativePathJson}}});
+const tsx = join(packageRoot, "node_modules", "tsx", "dist", "cli.mjs");
+const commandName = {{{commandNameJson}}};
+const commandArg = process.argv[2];
+const command = commandArg === "dev" || commandArg === "start" || commandArg === "stop" || commandArg === "restart"
+  ? commandArg
+  : undefined;
+const passthroughArgs = command ? process.argv.slice(3) : process.argv.slice(2);
+
+if (!existsSync(tsx)) {
+  console.error("缺少 tsx，请先安装依赖");
+  process.exit(1);
+}
+
+const pathNormalize = (pathValue) => pathValue.toLowerCase().replaceAll("\\\\", "/");
+const nodeEnv = command === "dev"
+  ? "development"
+  : command === "start"
+    ? "production"
+    : process.env.NODE_ENV;
+const shouldWatch = command === "dev" || command === "restart";
+
+const processInfosGet = () => {
+  if (process.platform === "win32") {
+    const processResult = spawnSync("powershell.exe", [
+      "-NoProfile",
+      "-Command",
+      "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress",
+    ], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    if (processResult.error) throw processResult.error;
+    if (processResult.status !== 0) {
+      throw new Error(\`Failed to query Windows processes: \${processResult.stderr || processResult.stdout}\`);
+    }
+    const parsed = JSON.parse(processResult.stdout || "[]");
+    return Array.isArray(parsed) ? parsed : [parsed];
+  }
+
+  const processResult = spawnSync("ps", ["-eo", "pid=,ppid=,command="], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (processResult.error) throw processResult.error;
+  if (processResult.status !== 0) {
+    throw new Error(\`Failed to query processes: \${processResult.stderr || processResult.stdout}\`);
+  }
+  return (processResult.stdout ?? "")
+    .split(/\\r?\\n/)
+    .filter(Boolean)
+    .map((line) => {
+      const match = line.trim().match(/^(\\d+)\\s+(\\d+)\\s+(.*)$/);
+      if (!match) throw new Error(\`Cannot parse ps output line: \${line}\`);
+      return {
+        ProcessId: Number(match[1]),
+        ParentProcessId: Number(match[2]),
+        CommandLine: match[3],
+      };
+    });
+};
+
+const currentProcessIdsGet = (processInfos) => {
+  const processMap = new Map(processInfos.map((processInfo) => [
+    Number(processInfo.ProcessId),
+    Number(processInfo.ParentProcessId),
+  ]));
+  const currentProcessIds = new Set([process.pid]);
+  for (let processId = process.pid; processMap.has(processId);) {
+    const parentProcessId = processMap.get(processId);
+    if (parentProcessId === undefined || !Number.isInteger(parentProcessId) || currentProcessIds.has(parentProcessId)) break;
+    currentProcessIds.add(parentProcessId);
+    processId = parentProcessId;
+  }
+  return currentProcessIds;
+};
+
+const devStop = () => {
+  const processInfos = processInfosGet();
+  const currentProcessIds = currentProcessIdsGet(processInfos);
+  const entryPath = pathNormalize(entry);
+  const matchedProcesses = processInfos
+    .map((processInfo) => ({
+      processId: Number(processInfo.ProcessId),
+      parentProcessId: Number(processInfo.ParentProcessId),
+      commandLine: pathNormalize(String(processInfo.CommandLine ?? "")),
+    }))
+    .filter(({ processId, commandLine }) => (
+      Number.isInteger(processId)
+      && !currentProcessIds.has(processId)
+      && commandLine.includes(entryPath)
+    ));
+  const matchedProcessIds = new Set(matchedProcesses.map(({ processId }) => processId));
+  const processIds = matchedProcesses
+    .filter(({ parentProcessId }) => !matchedProcessIds.has(parentProcessId))
+    .map(({ processId }) => processId);
+
+  if (processIds.length === 0) {
+    console.log(\`\${commandName} is not running\`);
+    return;
+  }
+
+  const uniqueProcessIds = [...new Set(processIds)];
+  const stopResult = process.platform === "win32"
+    ? spawnSync("taskkill", [...uniqueProcessIds.flatMap((processId) => ["/PID", String(processId)]), "/T", "/F"], { stdio: "inherit", windowsHide: true })
+    : spawnSync("kill", ["-TERM", ...uniqueProcessIds.map(String)], { stdio: "inherit", windowsHide: true });
+  if (stopResult.error) throw stopResult.error;
+  if (typeof stopResult.status === "number" && stopResult.status !== 0) {
+    throw new Error(\`Failed to stop process ids: \${uniqueProcessIds.join(", ")}\`);
+  }
+  console.log(\`\${commandName} stopped \${processIds.length} process\${processIds.length === 1 ? "" : "es"}\`);
+};
+
+if (command === "stop") {
+  devStop();
+  process.exit(0);
+}
+if (command === "restart") devStop();
+
+let isStopping = false;
+const devStopAndExit = (exitCode) => {
+  if (isStopping) return;
+  isStopping = true;
+  try {
+    devStop();
+    process.exit(exitCode);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  }
+};
+
+const childArgs = shouldWatch
+  ? [tsx, "watch", "--clear-screen=false", entry, ...passthroughArgs]
+  : [tsx, entry, ...passthroughArgs];
+const child = spawn(process.execPath, childArgs, {
+  env: {
+    ...process.env,
+    ...(nodeEnv ? { NODE_ENV: nodeEnv } : {}),
+  },
+  stdio: "inherit",
+  shell: false,
+  windowsHide: true,
+});
+
+if (shouldWatch) {
+  process.once("SIGINT", () => devStopAndExit(130));
+  process.once("SIGTERM", () => devStopAndExit(143));
+}
+
+child.once("error", (error) => {
+  console.error(error.message);
+  process.exit(1);
+});
+
+child.once("exit", (code, signal) => {
+  if (isStopping) return;
+  if (signal) {
+    process.kill(process.pid, signal);
+    return;
+  }
+  process.exit(code ?? 0);
+});
+`, {
+            commandNameJson: JSON.stringify(context.commandName),
+            entryRelativePathJson: JSON.stringify(context.entryRelativePath),
+            rootRelativePathJson: JSON.stringify(context.rootRelativePath),
+        });
+    }
+
+    public command_shell_create(wrapperPath: string): string {
+        return this.tplRender(`#!/usr/bin/env sh
+exec node {{{wrapperPathJson}}} "$@"
+`, { wrapperPathJson: JSON.stringify(wrapperPath) });
+    }
+
+    public command_cmd_create(wrapperPath: string): string {
+        return this.tplRender(`@ECHO off
+node {{{wrapperPathJson}}} %*
+`, { wrapperPathJson: JSON.stringify(wrapperPath) });
+    }
+
+    public command_ps1_create(wrapperPath: string): string {
+        return this.tplRender(`& node {{{wrapperPathJson}}} @args
+exit $LASTEXITCODE
+`, { wrapperPathJson: JSON.stringify(wrapperPath) });
+    }
+
+    public publish_yml_create(packageName: string): string {
+        return this.tplRender(`name: Publish {{{packageName}}}
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+`, { packageName });
+    }
+
+    public publish_yml_job_npmjs_create(context: TplPublishJobContext): string {
+        return this.tplRender(`  npmjs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write{{{jobDefaultsContent}}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: {{{pnpmVersion}}}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm run build --if-present
+      - run: pnpm publish --access public --no-git-checks --provenance
+        env:
+          NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}`, this.publish_yml_jobView(context));
+    }
+
+    public publish_yml_job_github_packages_create(context: TplPublishJobContext): string {
+        return this.tplRender(`  github_packages:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write{{{jobDefaultsContent}}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: {{{pnpmVersion}}}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://npm.pkg.github.com
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm run build --if-present
+      - run: pnpm publish --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: \${{ secrets.GITHUB_TOKEN }}`, this.publish_yml_jobView(context));
+    }
+
+    public publish_yml_job_github_prelease_create(context: Pick<TplPublishJobContext, "pnpmVersion">): string {
+        return this.tplRender(`  github_prelease:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: {{{pnpmVersion}}}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm dlx github:see7788/create-todo-cli initGithubPkg
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}`, context);
+    }
+
+    private publish_yml_defaults_create(workingDirectory = "."): string {
+        if (!workingDirectory || workingDirectory === ".") {
+            return "";
+        }
+        return `
+    defaults:
+      run:
+        working-directory: ${workingDirectory.replace(/\\/g, "/")}`;
+    }
+
+    private publish_yml_jobView(context: TplPublishJobContext): Record<string, string> {
+        return {
+            jobDefaultsContent: this.publish_yml_defaults_create(context.workingDirectory),
+            pnpmVersion: context.pnpmVersion,
+        };
+    }
+
+    private tplRender(templateText: string, view: Record<string, unknown>): string {
+        return Mustache.render(templateText, view);
+    }
+}
+
 /**基类 - 提供通用的工具方法和项目信息访问*/
 export default class LibBase {
     protected readonly cwdProjectInfo: cwdProjectInfo_t
-    constructor() {
-        this.cwdProjectInfo = this.getcwdProjectInfo()
+    private githubLoginCache?: string;
+
+    constructor(options: { requirePackage?: boolean } = {}) {
+        this.cwdProjectInfo = this.getcwdProjectInfo(options.requirePackage ?? true)
     }
 
-    /**获取当前工作目录的项目信息 - 递归查找package.json*/
-    private getcwdProjectInfo(): cwdProjectInfo_t {
+    public static pnpmWorkspaceRootFind(startPath = process.cwd()): string | undefined {
+        let dir = path.resolve(startPath);
+        while (path.dirname(dir) !== dir) {
+            if (fs.existsSync(path.join(dir, "pnpm-workspace.yaml"))) {
+                return dir;
+            }
+            dir = path.dirname(dir);
+        }
+        return undefined;
+    }
+
+    public static pnpmWorkspacePackagesParse(text: string): string[] {
+        const packages: string[] = [];
+        let inPackages = false;
+
+        for (const line of text.split(/\r?\n/)) {
+            if (/^\s*packages\s*:\s*$/.test(line)) {
+                inPackages = true;
+                continue;
+            }
+            if (inPackages && /^\S/.test(line) && !line.startsWith("packages:")) {
+                break;
+            }
+
+            const match = line.match(/^\s*-\s*["']?([^"']+)["']?\s*$/);
+            if (inPackages && match?.[1]) {
+                packages.push(match[1]);
+            }
+        }
+
+        return packages;
+    }
+
+    public static hasExternalPnpmWorkspace(startPath = process.cwd()): boolean {
+        const workspaceRoot = this.pnpmWorkspaceRootFind(startPath);
+        if (!workspaceRoot) {
+            return false;
+        }
+
+        return this.pnpmWorkspacePackagesParse(
+            fs.readFileSync(path.join(workspaceRoot, "pnpm-workspace.yaml"), "utf-8"),
+        ).some(item => item.startsWith("../"));
+    }
+
+    /** 获取当前工作目录的项目信息 - 递归查找 package.json */
+    private getcwdProjectInfo(requirePackage: boolean): cwdProjectInfo_t {
         const cwdPath = process.cwd();
         let dir = cwdPath;
         let pkgPath: string | undefined;
@@ -119,32 +540,21 @@ export default class LibBase {
             dir = parentDir;
         }
         if (!jsonInfo || !pkgPath || !workspacePath) {
-            throw new Appexit('不存在 package.json 文件');
+            if (!requirePackage) {
+                return {
+                    pkgPath: cwdPath,
+                    workspacePath: cwdPath,
+                    cwdPath,
+                    jsonPath: path.join(cwdPath, "package.json"),
+                    jsonInfo: {},
+                };
+            }
+            throw new Appexit("不存在 package.json 文件");
         }
         return { pkgPath, workspacePath, cwdPath, jsonPath, jsonInfo };
     }
 
-    /**执行Git命令并处理错误 - 统一Git操作的错误处理（工具方法）*/
-    protected runGitCommand(cmd: string, options?: ExecSyncOptionsWithStringEncoding, throwOnError: boolean = true): string | null {
-        try {
-            // 禁止LF/CRLF警告输出，提升用户体验
-            const result = execSync(`git -c core.safecrlf=false ${cmd}`, {
-                stdio: 'pipe',
-                cwd: process.cwd(),
-                ...(options || {})
-            });
-            return result.toString().trim();
-        } catch (error: any) {
-            if (throwOnError) {
-                // 致命错误
-                throw new Appexit(`Git命令执行失败: ${cmd}`);
-            }
-            // 非致命错误，返回null
-            return null;
-        }
-    }
-
-    /**执行交互式命令 - 用于需要用户交互的命令（工具方法）*/
+    /** Run an interactive shell command. */
     protected runInteractiveCommand(cmd: string, throwOnError: boolean = true): void {
         try {
             // 如果是git命令，添加参数禁止LF/CRLF警告
@@ -155,38 +565,46 @@ export default class LibBase {
         } catch (error: any) {
             if (throwOnError) {
                 // 交互式命令执行失败是致命错误
-                throw new Appexit('交互式命令执行失败');
+                throw new Appexit("Interactive command failed");
             }
             // 非致命错误，静默失败
         }
     }
 
-    /**执行通用命令并返回结果 - 支持非致命错误模式（工具方法）*/
-    protected runCommand(cmd: string, options?: ExecSyncOptionsWithStringEncoding, throwOnError: boolean = true): string | null {
-        try {
-            const result = execSync(cmd, {
-                stdio: 'pipe',
-                cwd: process.cwd(),
-                ...(options || {})
-            });
-            return result.toString().trim();
-        } catch (error: any) {
-            if (throwOnError) {
-                // 致命错误
-                throw new Appexit(`命令执行失败: ${cmd}`);
+    /** Ask for a valid output name. */
+    protected async askValidOutputName(options: ConfirmOutputNameOptions): Promise<string> {
+        let name = options.initialName?.trim() || "";
+        while (true) {
+            if (!name) {
+                const prompts = await import("prompts");
+                const response = await prompts.default({
+                    type: "text",
+                    name: "name",
+                    message: options.message,
+                    initial: options.defaultName,
+                });
+                if (!response.name) {
+                    throw new Error("user-cancelled");
+                }
+                name = String(response.name).trim();
             }
-            // 非致命错误，返回null
-            return null;
-        }
-    }
 
-    protected async confirmOutputTarget(options: ConfirmOutputNameOptions): Promise<OutputTarget> {
-        const name = await this.confirmOutputName(options);
-        const basePath = options.basePath ?? this.cwdProjectInfo.cwdPath;
-        return {
-            name,
-            path: path.resolve(basePath, name),
-        };
+            try {
+                this.validateOutputName(name);
+                const basePath = options.basePath ?? this.cwdProjectInfo.cwdPath;
+                const targetPath = path.resolve(basePath, name);
+                if (options.existsError && fs.existsSync(targetPath)) {
+                    throw new Error(`目录已存在: ${name}`);
+                }
+                return name;
+            } catch (error) {
+                if (error instanceof Error && error.message === "user-cancelled") {
+                    throw error;
+                }
+                console.error(error instanceof Error ? error.message : String(error));
+                name = "";
+            }
+        }
     }
 
     /**确认输出名称 - 支持命令行传入、默认值、名称校验和目标路径确认 */
@@ -211,7 +629,8 @@ export default class LibBase {
                 this.validateOutputName(name);
                 const basePath = options.basePath ?? this.cwdProjectInfo.cwdPath;
                 const targetPath = path.resolve(basePath, name);
-                if (options.existsError && fs.existsSync(targetPath)) {
+                const targetExists = fs.existsSync(targetPath);
+                if (options.existsError && targetExists) {
                     throw new Error(`目录已存在: ${name}`);
                 }
 
@@ -219,7 +638,7 @@ export default class LibBase {
                 const response = await prompts.default({
                     type: "confirm",
                     name: "confirmed",
-                    message: `${options.targetLabel}: ${targetPath}\n是否继续？`,
+                    message: `${options.targetLabel}: ${targetExists ? "将替换" : "将新建"}: ${targetPath}\n是否继续？`,
                     initial: true,
                 });
                 if (response.confirmed === undefined) {
@@ -251,6 +670,31 @@ export default class LibBase {
 
     protected pathDisplay(filePath: string): string {
         return path.resolve(filePath);
+    }
+
+    protected readJsonFile<T = any>(filePath: string): T | undefined {
+        try {
+            if (!fs.existsSync(filePath)) return undefined;
+            return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as T;
+        } catch {
+            return undefined;
+        }
+    }
+
+    protected readRequiredJsonFile<T = any>(filePath: string): T {
+        const value = this.readJsonFile<T>(filePath);
+        if (!value) {
+            throw new Appexit(`JSON file not found or invalid: ${filePath}`);
+        }
+        return value;
+    }
+
+    protected writeJsonFile(filePath: string, value: unknown): void {
+        fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
+    }
+
+    protected toPackageName(name: string): string {
+        return String(name).trim();
     }
 
     protected rewritePackageJsonIdentity(targetPath: string, packageName: string): ProjectIdentity {
@@ -295,15 +739,10 @@ export default class LibBase {
         return identity;
     }
 
-    protected createGithubPublish(config: GithubPublishConfig): string {
-        const workflowPath = path.join(config.targetPath, ".github", "workflows", "publish.yml");
-        fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
-        fs.writeFileSync(workflowPath, this.githubPublishContent(config.packageName, config.workingDirectory), "utf-8");
-        return workflowPath;
-    }
-
     protected async finalizeProjectOutput(targetPath: string, packageName: string): Promise<ProjectIdentity> {
-        const identity = this.rewritePackageJsonIdentity(targetPath, packageName);
+        const normalizedPackageName = this.toPackageName(packageName);
+        const identity = this.rewritePackageJsonIdentity(targetPath, normalizedPackageName);
+        await this.gitProjectEnsure(targetPath, normalizedPackageName);
         await this.pnpmRootSetupAsk();
         await this.publishWorkflowAsk(targetPath, identity);
         return identity;
@@ -323,7 +762,7 @@ export default class LibBase {
         }
 
         const packageName = String(response.packageName).trim();
-        this.githubProjectRepoEnsure(packageName);
+        await this.githubProjectRepoEnsure(packageName);
         const identity = this.rewritePackageJsonIdentity(this.cwdProjectInfo.pkgPath, packageName);
         console.log(`已重写 package.json 身份信息: ${identity.packageName}`);
         console.log(`package.json: ${this.pathDisplay(this.packagePath("package.json"))}`);
@@ -331,28 +770,18 @@ export default class LibBase {
 
     public async setupPnpmWorkspaceRoot(): Promise<void> {
         const packageName = this.cwdProjectInfo.jsonInfo.name ?? path.basename(this.cwdProjectInfo.pkgPath);
-        this.githubProjectRepoEnsure(packageName);
+        await this.githubProjectRepoEnsure(packageName);
         await this.pnpmRootSetupAsk();
     }
 
-    public async createCurrentGithubPublish(): Promise<void> {
-        const packageName = this.cwdProjectInfo.jsonInfo.name ?? path.basename(this.cwdProjectInfo.pkgPath);
-        const projectRepo = this.githubProjectRepoEnsure(packageName);
-        await this.publishWorkflowAsk(this.cwdProjectInfo.pkgPath, {
-            packageName,
-            repositoryName: projectRepo?.repo ?? this.githubRepositoryNameGet(packageName),
-            author: typeof this.cwdProjectInfo.jsonInfo.author === "string" ? this.cwdProjectInfo.jsonInfo.author : undefined,
-            githubOwner: projectRepo?.owner,
-            repositoryUrl: projectRepo ? `https://github.com/${projectRepo.owner}/${projectRepo.repo}.git` : undefined,
-            homepage: projectRepo ? `https://github.com/${projectRepo.owner}/${projectRepo.repo}` : undefined,
-            bugsUrl: projectRepo ? `https://github.com/${projectRepo.owner}/${projectRepo.repo}/issues` : undefined,
-            license: this.cwdProjectInfo.jsonInfo.license ?? "MIT",
-        });
+    public initCurrentGitignore(): void {
+        this.gitignoreSet(this.cwdProjectInfo.workspacePath);
+        console.log(`.gitignore 已初始化: ${this.pathDisplay(path.join(this.cwdProjectInfo.workspacePath, ".gitignore"))}`);
     }
 
     private async pnpmRootSetupAsk(): Promise<void> {
         if (this.isPnpmWorkspaceRoot(this.cwdProjectInfo.workspacePath)) {
-            console.log("当前目录已经是 pnpm workspace 根");
+            console.log("Current directory is already a pnpm workspace root");
             return;
         }
 
@@ -374,17 +803,17 @@ export default class LibBase {
 
         this.pnpmWorkspaceFileSet();
         this.npmrcSet();
-        this.gitignoreSet();
+        this.gitignoreSet(this.cwdProjectInfo.workspacePath);
         this.rootPackageJsonSet();
         console.log(`pnpm workspace 根配置已补齐: ${this.pathDisplay(this.cwdProjectInfo.workspacePath)}`);
     }
 
-    private async publishWorkflowAsk(targetPath: string, identity: ProjectIdentity): Promise<void> {
+    protected async publishWorkflowAsk(targetPath: string, identity: ProjectIdentity): Promise<void> {
         const prompts = await import("prompts");
         const response = await prompts.default({
             type: "confirm",
             name: "enabled",
-            message: "是否为当前项目创建 GitHub Actions publish.yml？",
+            message: "Create publish config for current project?",
             initial: false,
         });
 
@@ -396,11 +825,16 @@ export default class LibBase {
             return;
         }
 
-        const workflowPath = this.createGithubPublish({
+        const result = await new PublishYml().createForProject({
             packageName: identity.packageName,
             targetPath,
+            githubOwner: identity.githubOwner,
         });
-        console.log(`已创建 publish.yml: ${this.pathDisplay(workflowPath)}`);
+        if (!result) {
+            return;
+        }
+        console.log(`已创建发布配置: ${result.files.map(filePath => this.pathDisplay(filePath)).join(", ")}`);
+        return;
     }
 
     private pnpmWorkspaceFileSet(): void {
@@ -418,14 +852,82 @@ export default class LibBase {
         this.linesFileEnsure(path.join(this.cwdProjectInfo.workspacePath, ".npmrc"), ["store-dir=./.pnpm-store"]);
     }
 
-    private gitignoreSet(): void {
-        this.linesFileEnsure(path.join(this.cwdProjectInfo.workspacePath, ".gitignore"), [
+    protected gitignoreSet(targetPath: string): void {
+        this.linesFileEnsure(path.join(targetPath, ".gitignore"), [
             ".pnpm-store/**",
             "**/node_modules/**",
             "**/dist/**",
             "**/**_bak/",
             "**/**.bak",
         ]);
+    }
+
+    protected async gitProjectEnsure(targetPath: string, packageName: string): Promise<GitHubRepo | undefined> {
+        const normalizedPackageName = this.toPackageName(packageName);
+        const projectRepo = this.githubProjectRepoGet(normalizedPackageName);
+        if (!projectRepo) {
+            console.log("GitHub owner not detected, skip repository creation");
+            return undefined;
+        }
+
+        if (!fs.existsSync(path.join(targetPath, ".git"))) {
+            try {
+                await this.commandRunInherit("git init -b master", targetPath, "git init");
+            } catch {
+                await this.commandRunInherit("git init", targetPath, "git init");
+                await this.commandRunInherit("git checkout -B master", targetPath, "git checkout master");
+            }
+            console.log(`已初始化 git 仓库: ${this.pathDisplay(targetPath)}`);
+        }
+
+        const targetUrl = `https://github.com/${projectRepo.owner}/${projectRepo.repo}.git`;
+        if (this.githubRepoExists(projectRepo)) {
+            console.log(`GitHub repository exists, bind to ${projectRepo.owner}/${projectRepo.repo}`);
+        } else {
+            const prompts = await import("prompts");
+            const visibilityResponse = await prompts.default({
+                type: "select",
+                name: "visibility",
+                message: `GitHub repository ${projectRepo.owner}/${projectRepo.repo} does not exist. Create as:`,
+                choices: [
+                    { title: "public", value: "public" },
+                    { title: "private", value: "private" },
+                ],
+                initial: 0,
+            });
+            if (!visibilityResponse.visibility) {
+                throw new Error("user-cancelled");
+            }
+            const visibility = visibilityResponse.visibility as "public" | "private";
+            try {
+                await this.commandRunInherit(
+                    `gh repo create ${this.shellArg(`${projectRepo.owner}/${projectRepo.repo}`)} --${visibility} --clone=false`,
+                    targetPath,
+                    `gh repo create ${projectRepo.owner}/${projectRepo.repo}`,
+                );
+                console.log(`Created GitHub ${visibility} repository: ${projectRepo.owner}/${projectRepo.repo}`);
+            } catch {
+                throw new Appexit(`GitHub repository create failed: ${projectRepo.owner}/${projectRepo.repo}`);
+            }
+        }
+
+        const currentUrl = this.commandGet("git config --get remote.origin.url", targetPath);
+        if (currentUrl === targetUrl) {
+            return projectRepo;
+        }
+
+        try {
+            if (currentUrl) {
+                await this.commandRunInherit(`git remote set-url origin ${this.shellArg(targetUrl)}`, targetPath, "git remote set-url");
+            } else {
+                await this.commandRunInherit(`git remote add origin ${this.shellArg(targetUrl)}`, targetPath, "git remote add");
+            }
+            console.log(`已设置 origin: ${targetUrl}`);
+        } catch {
+            throw new Appexit(`GitHub origin 设置失败: ${targetUrl}`);
+        }
+
+        return projectRepo;
     }
 
     private rootPackageJsonSet(): void {
@@ -461,99 +963,18 @@ export default class LibBase {
         return fs.existsSync(path.join(dirPath, "pnpm-workspace.yaml"));
     }
 
-    private githubPublishContent(packageName: string, workingDirectory = "."): string {
-        const defaults = workingDirectory === "."
-            ? ""
-            : `
-    defaults:
-      run:
-        working-directory: ${workingDirectory.replace(/\\/g, "/")}`;
-        return `name: Publish ${packageName}
-
-on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
-
-jobs:
-  publish:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write${defaults}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: ${this.pnpmVersionGet()}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: https://registry.npmjs.org
-      - run: pnpm install --no-frozen-lockfile
-      - run: pnpm run build --if-present
-      - run: pnpm publish --access public --no-git-checks --provenance
-        env:
-          NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}
-`;
-    }
-
-    private pnpmVersionGet(): string {
-        const packageManager = this.cwdProjectInfo.jsonInfo.packageManager;
-        if (packageManager?.startsWith("pnpm@")) {
-            return packageManager.slice("pnpm@".length);
-        }
-        return "10";
-    }
-
     private validateOutputName(name: string): void {
-        if (!name) {
-            throw new Error("名称不能为空");
+        if (!name || !String(name).trim()) {
+            throw new Error("无效的名称：不能为空");
         }
-        if (name.includes("/")) {
-            throw new Error("名称不能包含 /");
+        // 不允许路径分隔符或空白字符
+        if (/[\\/\s]/.test(name)) {
+            throw new Error("无效的名称：不能包含路径分隔符或空白字符");
         }
-        if (!/^[a-zA-Z0-9-_]+$/.test(name)) {
-            throw new Error("名称只能包含字母、数字、- 和 _");
+        // 保守校验：允许字母、数字、点、下划线、破折号和 @
+        if (!/^[a-zA-Z0-9._@\-]+$/.test(name)) {
+            throw new Error("无效的名称：包含不支持的字符");
         }
-    }
-
-    protected readJsonFile<T>(filePath: string): T | undefined {
-        if (!fs.existsSync(filePath)) {
-            return undefined;
-        }
-        return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T;
-    }
-
-    protected readRequiredJsonFile<T>(filePath: string): T {
-        const value = this.readJsonFile<T>(filePath);
-        if (!value) {
-            throw new Appexit(`JSON 文件不存在: ${filePath}`);
-        }
-        return value;
-    }
-
-    protected writeJsonFile(filePath: string, value: PackageJsonRecord): void {
-        fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
-    }
-
-    protected toPackageName(name: string): string {
-        return name
-            .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
-            .replace(/[^a-zA-Z0-9._~-]+/g, "-")
-            .toLowerCase();
-    }
-
-    protected findPackageRoot(filePath: string): string {
-        let dir = path.dirname(filePath);
-        while (path.dirname(dir) !== dir) {
-            if (fs.existsSync(path.join(dir, "package.json"))) {
-                return dir;
-            }
-            dir = path.dirname(dir);
-        }
-        return this.cwdProjectInfo.pkgPath;
     }
 
     protected replaceText(filePath: string, replacements: Record<string, string>): void {
@@ -587,33 +1008,48 @@ jobs:
         fs.writeFileSync(readmePath, content, "utf-8");
     }
 
-    private githubProjectRepoEnsure(packageName: string): GitHubRepo | undefined {
+    private async githubProjectRepoEnsure(packageName: string): Promise<GitHubRepo | undefined> {
         const projectRepo = this.githubProjectRepoGet(packageName);
         if (!projectRepo) {
-            console.log("未检测到 GitHub owner，跳过同名公共仓库创建");
+            console.log("GitHub owner not detected, skip repository creation");
             return undefined;
         }
 
         const currentRepo = this.currentGitHubRepoGet();
-        if (currentRepo?.owner === projectRepo.owner && currentRepo.repo === projectRepo.repo) {
-            return projectRepo;
+        const isCurrentProjectRepo = currentRepo?.owner === projectRepo.owner && currentRepo.repo === projectRepo.repo;
+        if (!isCurrentProjectRepo) {
+            if (this.githubRepoExists(projectRepo)) {
+                console.log(`GitHub 仓库已存在: ${projectRepo.owner}/${projectRepo.repo}`);
+            } else {
+                const prompts = await import("prompts");
+                const visibilityResponse = await prompts.default({
+                    type: "select",
+                    name: "visibility",
+                    message: `GitHub 仓库 ${projectRepo.owner}/${projectRepo.repo} 不存在，选择创建为：`,
+                    choices: [
+                        { title: "public", value: "public" },
+                        { title: "private", value: "private" },
+                    ],
+                    initial: 0,
+                });
+                if (!visibilityResponse.visibility) {
+                    throw new Error("user-cancelled");
+                }
+                const visibility = visibilityResponse.visibility as "public" | "private";
+                try {
+                    execSync(
+                        `gh repo create ${this.shellArg(`${projectRepo.owner}/${projectRepo.repo}`)} --${visibility} --clone=false`,
+                        { cwd: this.cwdProjectInfo.pkgPath, stdio: "inherit" },
+                    );
+                    console.log(`已创建 GitHub ${visibility} 仓库: ${projectRepo.owner}/${projectRepo.repo}`);
+                } catch {
+                    throw new Appexit(`GitHub 仓库创建失败: ${projectRepo.owner}/${projectRepo.repo}`);
+                }
+            }
+            this.githubOriginRemoteEnsure(projectRepo, currentRepo);
         }
 
-        if (this.githubRepoExists(projectRepo)) {
-            console.log(`GitHub 仓库已存在: ${projectRepo.owner}/${projectRepo.repo}`);
-            return projectRepo;
-        }
-
-        try {
-            execSync(
-                `gh repo create ${this.shellArg(`${projectRepo.owner}/${projectRepo.repo}`)} --public --clone=false`,
-                { cwd: this.cwdProjectInfo.pkgPath, stdio: "inherit" },
-            );
-            console.log(`已创建 GitHub 公共仓库: ${projectRepo.owner}/${projectRepo.repo}`);
-            return projectRepo;
-        } catch {
-            throw new Appexit(`GitHub 公共仓库创建失败: ${projectRepo.owner}/${projectRepo.repo}`);
-        }
+        return projectRepo;
     }
 
     private githubProjectRepoGet(packageName: string): GitHubRepo | undefined {
@@ -628,15 +1064,117 @@ jobs:
         };
     }
 
+    private gitEnsureInitialCommit(targetPath: string): void {
+        if (this.commandGet("git rev-parse --verify HEAD", targetPath)) {
+            return;
+        }
+
+        const lockFile = path.join(targetPath, ".git", "index.lock");
+        if (fs.existsSync(lockFile)) {
+            console.warn(`检测到 .git/index.lock 存在，假定可能有其他 git 进程在运行，跳过添加并尝试创建空提交`);
+            try {
+                execSync(`git commit --allow-empty -m ${this.shellArg("chore: initial commit")}`, {
+                    cwd: targetPath,
+                    stdio: "inherit",
+                });
+                console.log("已创建空提交（因存在 index.lock）");
+                return;
+            } catch {
+                throw new Appexit("由于存在 index.lock，创建空提交失败");
+            }
+        }
+
+        try {
+            execSync("git add -A", { cwd: targetPath, stdio: "inherit" });
+        } catch (err) {
+            console.warn(`git add -A 失败: ${err instanceof Error ? err.message : String(err)}，尝试空提交`);
+            try {
+                execSync(`git commit --allow-empty -m ${this.shellArg("chore: initial commit")}`, {
+                    cwd: targetPath,
+                    stdio: "inherit",
+                });
+                console.log("已创建空提交（git add 失败降级）");
+                return;
+            } catch {
+                throw new Appexit("创建初始空提交失败");
+            }
+        }
+
+        try {
+            execSync(`git commit -m ${this.shellArg("chore: initial commit")}`, {
+                cwd: targetPath,
+                stdio: "inherit",
+            });
+        } catch {
+            const status = this.commandGet("git status --porcelain", targetPath);
+            if (!status) {
+                execSync(`git commit --allow-empty -m ${this.shellArg("chore: initial commit")}`, {
+                    cwd: targetPath,
+                    stdio: "inherit",
+                });
+                console.log("工作区无更改，已创建空提交");
+                return;
+            }
+            throw new Appexit("创建初始提交失败");
+        }
+    }
+
+    // gitCleanupLockFile 已移除；脚本不再尝试自动删除 .git/index.lock
+
+    private gitPushHead(targetPath: string): void {
+        try {
+            execSync(`git -c credential.helper= -c credential.helper="!gh auth git-credential" push -u origin HEAD`, {
+                cwd: targetPath,
+                stdio: "inherit",
+            });
+        } catch {
+            throw new Appexit("推送到 GitHub 远程仓库失败");
+        }
+    }
+
     private githubRepoExists(repo: GitHubRepo): boolean {
         try {
+            console.log(`check GitHub repository: ${repo.owner}/${repo.repo}`);
             execSync(`gh repo view ${this.shellArg(`${repo.owner}/${repo.repo}`)}`, {
                 cwd: this.cwdProjectInfo.pkgPath,
                 stdio: "ignore",
+                timeout: 30_000,
             });
             return true;
         } catch {
             return false;
+        }
+    }
+
+    private githubOriginRemoteEnsure(projectRepo: GitHubRepo, currentRepo: GitHubRepo | undefined): void {
+        const targetUrl = `https://github.com/${projectRepo.owner}/${projectRepo.repo}.git`;
+        const currentUrl = this.commandGet("git config --get remote.origin.url");
+        if (currentUrl === targetUrl) {
+            return;
+        }
+
+        if (currentRepo) {
+            console.log(`当前 GitHub 仓库 ${currentRepo.owner}/${currentRepo.repo} 与项目名不一致，切换 origin 到 ${projectRepo.owner}/${projectRepo.repo}`);
+        } else if (currentUrl) {
+            console.log(`当前 origin 不是 GitHub 仓库，切换 origin 到 ${projectRepo.owner}/${projectRepo.repo}`);
+        } else {
+            console.log(`添加 origin 到 ${projectRepo.owner}/${projectRepo.repo}`);
+        }
+
+        try {
+            if (currentUrl) {
+                execSync(`git remote set-url origin ${this.shellArg(targetUrl)}`, {
+                    cwd: this.cwdProjectInfo.pkgPath,
+                    stdio: "inherit",
+                });
+            } else {
+                execSync(`git remote add origin ${this.shellArg(targetUrl)}`, {
+                    cwd: this.cwdProjectInfo.pkgPath,
+                    stdio: "inherit",
+                });
+            }
+        } catch {
+            throw new Appexit(`GitHub origin 设置失败: ${targetUrl}`);
         }
     }
 
@@ -668,16 +1206,51 @@ jobs:
     }
 
     private githubLoginGet(): string | undefined {
-        return this.commandGet("gh api user --jq .login");
+        if (this.githubLoginCache) {
+            return this.githubLoginCache;
+        }
+        console.log("detect GitHub login");
+        this.githubLoginCache = this.commandGet("gh api user --jq .login");
+        return this.githubLoginCache;
     }
 
     private gitConfigGet(key: string): string | undefined {
         return this.commandGet(`git config --get ${key}`);
     }
 
-    private commandGet(command: string): string | undefined {
+    private async commandRunInherit(command: string, cwd: string, label: string): Promise<void> {
+        console.log(`running: ${label}`);
+        const startTime = Date.now();
+        const child = spawn(command, {
+            cwd,
+            shell: true,
+            stdio: "inherit",
+            windowsHide: true,
+        });
+        const heartbeat = setInterval(() => {
+            const seconds = Math.round((Date.now() - startTime) / 1000);
+            console.log(`still running (${seconds}s): ${label}`);
+        }, 15_000);
+
         try {
-            const value = execSync(command, { cwd: process.cwd(), encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+            await new Promise<void>((resolve, reject) => {
+                child.once("error", reject);
+                child.once("close", code => {
+                    if (code === 0) {
+                        resolve();
+                    } else {
+                        reject(new Error(`${label} failed with exit code ${code}`));
+                    }
+                });
+            });
+        } finally {
+            clearInterval(heartbeat);
+        }
+    }
+
+    private commandGet(command: string, cwd = process.cwd()): string | undefined {
+        try {
+            const value = execSync(command, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 30_000 }).trim();
             return value || undefined;
         } catch {
             return undefined;
@@ -693,259 +1266,53 @@ jobs:
         });
     }
 
-    protected async askLocalDirectoryPath(initialPath?: string, shouldConfirm = true): Promise<string> {
-        return this.askLocalPath({
-            initialPath,
-            mode: "directory",
-            shouldConfirm,
-        });
-    }
-
     protected async askLocalPath(options: LocalPathOptions): Promise<string> {
         const prompts = await import('prompts');
-        const modeName = options.mode === "file" ? "文件" : "目录";
-        const fileExtensions = options.fileExtensions ?? ['.js', '.jsx', '.ts', '.tsx'];
-        const shouldConfirm = options.shouldConfirm ?? true;
-        console.log(`📁 开始${modeName}选择...`);
-
-        // 首先获取可用的磁盘驱动器
-        let availableDrives: string[] = [];
-        if (process.platform === 'win32') {
-            // Windows平台获取所有可用磁盘
-            try {
-                const drivesOutput = execSync('wmic logicaldisk get caption', { encoding: 'utf8' });
-                availableDrives = drivesOutput
-                    .split('\n')
-                    .map(line => line.trim())
-                    .filter(line => /^[A-Z]:$/.test(line));
-
-                // 添加当前目录作为快速访问选项
-                const currentDrive = process.cwd().split(':')[0] + ':';
-                if (!availableDrives.includes(currentDrive)) {
-                    availableDrives.push(currentDrive);
-                }
-            } catch (error) {
-                console.warn('⚠️ 无法获取磁盘列表，使用默认路径');
-                availableDrives = ['C:', process.cwd().split(':')[0] + ':'];
-            }
-        } else {
-            // 非Windows平台默认使用根目录和当前目录
-            availableDrives = ['/', process.cwd()];
-        }
-
-        // 如果提供了初始路径，直接使用它
+        const modeName = options.mode === "file" ? "file" : "directory";
         let currentPath = options.initialPath || process.cwd();
+        const shouldConfirm = options.shouldConfirm ?? true;
 
-        // 如果没有初始路径，让用户选择磁盘/根目录
-        if (!options.initialPath) {
-            console.log('\n🔍 第1步：选择磁盘驱动器');
-            const driveResponse = await prompts.default({
-                type: 'select',
-                name: 'drive',
-                message: `请选择要查找${modeName}的磁盘驱动器`,
-                choices: availableDrives.map(drive => ({
-                    title: drive === process.cwd().split(':')[0] + ':' ? `${drive} (当前磁盘)` : drive,
-                    value: drive
-                }))
-            });
-
-            if (!driveResponse.drive) {
-                const error = new Error('user-cancelled');
-                throw error;
-            }
-
-            console.log(`✅ 已选择: ${driveResponse.drive}`);
-            currentPath = driveResponse.drive;
-        }
-
-        let navigationLevel = options.initialPath ? 1 : 2; // 导航层级计数
-
-        // 多级导航选择目录和文件
         while (true) {
-            navigationLevel++;
-            console.log(`\n🔍 第${navigationLevel}步：浏览目录结构`);
-
-            // 获取当前目录下的所有文件和文件夹
-            let items: { name: string; path: string; isDirectory: boolean }[] = [];
-            try {
-                const files = fs.readdirSync(currentPath);
-                items = files
-                    .map(name => {
-                        const itemPath = path.join(currentPath, name);
-                        try {
-                            const stats = fs.statSync(itemPath);
-                            return { name, path: itemPath, isDirectory: stats.isDirectory() };
-                        } catch (error) {
-                            // 跳过无法访问的文件/文件夹
-                            return null;
-                        }
-                    })
-                    .filter((item): item is { name: string; path: string; isDirectory: boolean } => item !== null) // 类型断言过滤null值
-                    .sort((a, b) => {
-                        // 文件夹排在前面，文件排在后面
-                        if (a.isDirectory && !b.isDirectory) return -1;
-                        if (!a.isDirectory && b.isDirectory) return 1;
-                        // 同类项按名称排序
-                        return a.name.localeCompare(b.name);
-                    });
-            } catch (error) {
-                console.error('❌ 无法读取目录内容:', error);
-                // 让用户重试或取消
-                const retryResponse = await prompts.default({
-                    type: 'confirm',
-                    name: 'retry',
-                    message: '是否重试访问该目录？',
-                    initial: true
-                });
-
-                if (!retryResponse.retry) {
-                    // 给用户返回上一级的选项
-                    const goBackResponse = await prompts.default({
-                        type: 'confirm',
-                        name: 'goBack',
-                        message: '是否返回上一级目录？',
-                        initial: true
-                    });
-
-                    if (goBackResponse.goBack) {
-                        const parentPath = path.dirname(currentPath);
-                        if (parentPath !== currentPath) {
-                            currentPath = parentPath;
-                            navigationLevel--;
-                            continue;
-                        }
-                    }
-
-                    const error = new Error('user-cancelled');
-                    throw error;
-                }
-                continue;
-            }
-
-            // 添加特殊选项
-            const specialChoices = [
-                { title: '.. (上一级目录)', value: '..' },
-                { title: '🏠 当前工作目录', value: 'current' },
-                ...(options.mode === "directory" ? [{ title: '✅ 选择当前目录', value: 'select-current' }] : []),
-                { title: '❌ 取消选择', value: 'cancel' },
-            ];
-
-            // 构建文件/文件夹选项
-            const itemChoices = items.map(item => {
-                const isTargetFile = !item.isDirectory && fileExtensions.some(ext => item.name.toLowerCase().endsWith(ext));
-                return {
-                    title: item.isDirectory
-                        ? `📁 ${item.name}${this.isProjectDirectory(item.path) ? ' (项目目录)' : ''}`
-                        : isTargetFile
-                            ? `🎯 ${item.name} (目标文件)`
-                            : `📄 ${item.name}`,
-                    value: item.path,
-                    disabled: options.mode === "directory" ? !item.isDirectory : !item.isDirectory && !isTargetFile
-                };
+            const response = await prompts.default({
+                type: "text",
+                name: "pathValue",
+                message: `Please enter ${modeName} path`,
+                initial: currentPath,
             });
+            if (!response.pathValue) {
+                throw new Error("user-cancelled");
+            }
 
-            // 组合所有选项
-            const choices = [...specialChoices, ...itemChoices];
+            currentPath = path.resolve(String(response.pathValue).trim());
+            const exists = fs.existsSync(currentPath);
+            const stat = exists ? fs.statSync(currentPath) : undefined;
+            const modeMatched = options.mode === "file" ? stat?.isFile() : stat?.isDirectory();
+            const extensionMatched = options.mode !== "file"
+                || !options.fileExtensions?.length
+                || options.fileExtensions.includes(path.extname(currentPath));
 
-            // 询问用户选择
-            const selectionResponse = await prompts.default({
-                type: 'select',
-                name: 'selection',
-                message: `\n当前位置: ${currentPath}\n请选择一个目录进入${options.mode === "file" ? "，或选择一个目标文件" : "，或选择当前目录"}`,
-                choices
+            if (!exists || !modeMatched || !extensionMatched) {
+                console.error(`Invalid ${modeName} path: ${currentPath}`);
+                currentPath = "";
+                continue;
+            }
+
+            if (!shouldConfirm) {
+                return currentPath;
+            }
+
+            const confirmResponse = await prompts.default({
+                type: "confirm",
+                name: "confirmed",
+                message: `Use ${modeName}: ${currentPath}?`,
+                initial: true,
             });
-
-            // 处理特殊选择
-            if (!selectionResponse.selection) {
-                const error = new Error('user-cancelled');
-                throw error;
+            if (confirmResponse.confirmed === undefined) {
+                throw new Error("user-cancelled");
             }
-
-            // 处理特殊选项
-            if (selectionResponse.selection === 'cancel') {
-                const error = new Error('user-cancelled');
-                throw error;
-            } else if (selectionResponse.selection === 'current') {
-                currentPath = process.cwd();
-                console.log(`📂 已切换到当前工作目录: ${currentPath}`);
-                continue;
-            } else if (selectionResponse.selection === 'select-current') {
-                if (!shouldConfirm) {
-                    console.log(`\n✅ 已选择目录: ${currentPath}`);
-                    return currentPath;
-                }
-
-                const confirmResponse = await prompts.default({
-                    type: 'confirm',
-                    name: 'confirm',
-                    message: `\n已选择目录: ${currentPath}\n是否确认使用此目录？`,
-                    initial: true,
-                });
-
-                if (confirmResponse.confirm) {
-                    console.log(`\n✅ 已选择目录: ${currentPath}`);
-                    return currentPath;
-                }
-                continue;
-            } else if (selectionResponse.selection === '..') {
-                // 向上一级
-                const parentPath = path.dirname(currentPath);
-                if (parentPath !== currentPath) { // 防止到达根目录时无限循环
-                    console.log(`⬆️ 返回上一级目录`);
-                    currentPath = parentPath;
-                    navigationLevel--;
-                } else {
-                    console.log('⚠️ 已经到达根目录，无法继续向上');
-                }
-                continue;
+            if (confirmResponse.confirmed) {
+                return currentPath;
             }
-
-            // 处理常规选择
-            try {
-                const stats = fs.statSync(selectionResponse.selection);
-                if (stats.isDirectory()) {
-                    // 进入子目录
-                    currentPath = selectionResponse.selection;
-                    console.log(`📂 已进入目录: ${path.basename(currentPath)}`);
-                } else {
-                    // 选择了文件，检查是否为目标文件类型
-                    const isTargetFile = fileExtensions.some(ext =>
-                        selectionResponse.selection.toLowerCase().endsWith(ext)
-                    );
-
-                    if (isTargetFile) {
-                        if (!shouldConfirm) {
-                            console.log(`\n✅ 已选择文件: ${selectionResponse.selection}`);
-                            return selectionResponse.selection;
-                        }
-
-                        // 确认选择
-                        const confirmResponse = await prompts.default({
-                            type: 'confirm',
-                            name: 'confirm',
-                            message: `\n已选择文件: ${selectionResponse.selection}\n是否确认使用此文件？`,
-                            initial: true
-                        });
-
-                        if (confirmResponse.confirm) {
-                            console.log(`\n✅ 已选择文件: ${selectionResponse.selection}`);
-                            return selectionResponse.selection;
-                        }
-                    }
-                }
-            } catch (error) {
-                console.error('❌ 无法访问选定的项目:', error);
-                continue;
-            }
-        }
-    }
-
-    /**检查目录是否为有效的项目目录 */
-    private isProjectDirectory(dirPath: string): boolean {
-        try {
-            return fs.existsSync(path.join(dirPath, 'package.json'));
-        } catch (error) {
-            return false;
         }
     }
 }
