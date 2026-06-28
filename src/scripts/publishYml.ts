@@ -2,6 +2,7 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import prompts from "prompts";
+import { PublishTpl } from "./public.js";
 
 type PackageJsonRecord = {
   name?: string;
@@ -31,7 +32,7 @@ type PublishYmlResult = {
   tasks: PublishTask[];
 };
 
-class PublishYml {
+class PublishYml extends PublishTpl {
   public async createCurrent(startPath = process.cwd()): Promise<PublishYmlResult | undefined> {
     const targetPath = this.packageRootFind(startPath);
     const pkg = this.readJsonFile<PackageJsonRecord>(path.join(targetPath, "package.json")) ?? {};
@@ -140,7 +141,7 @@ class PublishYml {
     }
 
     const npmrcPath = path.join(context.targetPath, ".npmrc");
-    this.linesFileEnsure(npmrcPath, [`@${scope}:registry=https://npm.pkg.github.com`]);
+    this.publishLinesFileEnsure(npmrcPath, [`@${scope}:registry=https://npm.pkg.github.com`]);
     files.push(npmrcPath);
 
     files.push(this.workflowJobsSet(context, {
@@ -195,16 +196,8 @@ class PublishYml {
   }
 
   private workflowBaseContent(context: PublishYmlContext): string {
-    return `name: Publish ${context.packageName}
-
-on:
-  push:
-    branches:
-      - master
-  workflow_dispatch:
-
-jobs:
-`;
+    this.publishPackageName = context.packageName;
+    return this.publish_yml_create();
   }
 
   private workflowJobsUpsert(content: string, jobs: Record<string, string>, removeAliases: string[]): string {
@@ -246,83 +239,25 @@ jobs:
     workingDirectory?: string;
     pnpmVersion: string;
   }): string {
-    return `  npmjs:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write${this.jobDefaultsContent(config.workingDirectory)}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: ${config.pnpmVersion}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: https://registry.npmjs.org
-      - run: pnpm install --no-frozen-lockfile
-      - run: pnpm run build --if-present
-      - run: pnpm publish --access public --no-git-checks --provenance
-        env:
-          NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}`;
+    this.publishPnpmVersion = config.pnpmVersion;
+    this.publishWorkingDirectory = config.workingDirectory;
+    return this.publish_yml_job_npmjs_create();
   }
 
   private githubPackagesJobContent(config: {
     workingDirectory?: string;
     pnpmVersion: string;
   }): string {
-    return `  github_packages:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write${this.jobDefaultsContent(config.workingDirectory)}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: ${config.pnpmVersion}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: https://npm.pkg.github.com
-      - run: pnpm install --no-frozen-lockfile
-      - run: pnpm run build --if-present
-      - run: pnpm publish --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: \${{ secrets.GITHUB_TOKEN }}`;
+    this.publishPnpmVersion = config.pnpmVersion;
+    this.publishWorkingDirectory = config.workingDirectory;
+    return this.publish_yml_job_github_packages_create();
   }
 
   private githubPreleaseJobContent(config: {
     pnpmVersion: string;
   }): string {
-    return `  github_prelease:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: pnpm/action-setup@v4
-        with:
-          version: ${config.pnpmVersion}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - run: pnpm install --no-frozen-lockfile
-      - run: pnpm dlx github:see7788/create-todo-cli initGithubPkg
-        env:
-          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}`;
-  }
-
-  private jobDefaultsContent(workingDirectory = "."): string {
-    if (!workingDirectory || workingDirectory === ".") {
-      return "";
-    }
-    return `
-    defaults:
-      run:
-        working-directory: ${workingDirectory.replace(/\\/g, "/")}`;
+    this.publishPnpmVersion = config.pnpmVersion;
+    return this.publish_yml_job_github_prelease_create();
   }
 
   private githubScopeGet(context: PublishYmlContext, pkg: PackageJsonRecord): string {
@@ -377,13 +312,6 @@ jobs:
     return "10";
   }
 
-  private readJsonFile<T>(filePath: string): T | undefined {
-    if (!fs.existsSync(filePath)) {
-      return undefined;
-    }
-    return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T;
-  }
-
   private packageRootFind(startPath: string): string {
     let dir = path.resolve(startPath);
     while (path.dirname(dir) !== dir) {
@@ -395,11 +323,7 @@ jobs:
     throw new Error(`未找到 package.json: ${startPath}`);
   }
 
-  private writeJsonFile(filePath: string, value: PackageJsonRecord): void {
-    fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
-  }
-
-  private linesFileEnsure(filePath: string, lines: string[]): void {
+  private publishLinesFileEnsure(filePath: string, lines: string[]): void {
     const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf-8") : "";
     const existingLines = new Set(existing.split(/\r?\n/).map(line => line.trim()).filter(Boolean));
     const missingLines = lines.filter(line => !existingLines.has(line.trim()));

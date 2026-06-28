@@ -12,13 +12,11 @@ create-todo-cli/
 │  │  ├─ help / --help / -h
 │  │  ├─ 命令注册表 commands
 │  │  │  ├─ createPkg <?name> <?source>
-│  │  │  │  ├─ 创建项目
-│  │  │  │  ├─ source 支持：
-│  │  │  │  │  ├─ vite:<template>
-│  │  │  │  │  ├─ workspace-package / pnpm / package
-│  │  │  │  │  ├─ github:<owner/repo>
-│  │  │  │  │  └─ owner/repo 或 GitHub URL
-│  │  │  │  └─ 创建后执行项目身份、GitHub、pnpm workspace、publish 配置收尾
+│  │  │  │  ├─ 创建项目，默认目录 ./my-app
+│  │  │  │  ├─ source 为空时从交互菜单选择
+│  │  │  │  ├─ source 支持 vite、vite:<template>、command:/cmd:、github:、owner/repo
+│  │  │  │  ├─ 创建方式只有两种：执行 command 或用 degit 拉 GitHub 模板
+│  │  │  │  └─ 创建成功后执行项目身份、GitHub、pnpm workspace、publish 收尾
 │  │  │  ├─ distPkg <?name>
 │  │  │  │  ├─ 抽取 npm 包
 │  │  │  │  ├─ 交互选择 bundle/source
@@ -36,7 +34,7 @@ create-todo-cli/
 │  │  │  │  ├─ 普通平台项目提交
 │  │  │  │  │  ├─ git push
 │  │  │  │  │  ├─ git push for 兄弟目录
-│  │  │  │  │  ├─ 没有 .git 时执行 git init
+│  │  │  │  │  ├─ 没有 .git 时初始化 master 分支
 │  │  │  │  │  ├─ GitHub 同名仓库存在时直接绑定 master
 │  │  │  │  │  ├─ GitHub 同名仓库不存在时选择 public / private 后创建
 │  │  │  │  │  ├─ 确保初始提交
@@ -53,9 +51,9 @@ create-todo-cli/
 │  │  │  │     ├─ 刷新 lockfile
 │  │  │  │     └─ 提交并推送 release 仓库
 │  │  │  ├─ initPublishYml
-│  │  │  │  └─ 初始化 publish.yml 配置
+│  │  │  │  └─ 初始化 publish.yml / package.json 发布配置
 │  │  │  ├─ initPkgBin
-│  │  │  │  └─ 初始化 package.json bin TS/JS 入口
+│  │  │  │  └─ 选择或输入 TS/JS 入口后初始化 package.json bin
 │  │  │  ├─ initPnpmWorkspace
 │  │  │  │  └─ 初始化 pnpm workspace
 │  │  │  ├─ initPackageIdentity
@@ -67,14 +65,15 @@ create-todo-cli/
 │  │  │  └─ 无参数或未知命令时打开交互菜单
 │  └─ scripts/
 │     ├─ createPkg.ts
-│     │  ├─ 项目名称和目标路径校验
-│     │  ├─ Vite 模板分支
-│     │  ├─ pnpm workspace package 分支
-│     │  ├─ GitHub 模板 / GitHub URL 分支
+│     │  ├─ targetResolve：确定输出路径
+│     │  ├─ sourceResolve：命令行 source 或交互 choices
+│     │  ├─ sourceFromInput：解析 vite / vite:<template> / command / cmd / github / URL
+│     │  ├─ 执行方式：command 或 degit 模板拉取
+│     │  ├─ finalizeProjectOutput：项目身份、GitHub、pnpm workspace、publish 配置收尾
 │     │  └─ 创建失败时清理半成品目录
 │     ├─ createNodeBin.ts
-│     │  ├─ 输入当前 package root 内的 TS/JS 入口文件或目录
-│     │  ├─ 输入目录时自动解析 index.ts / index.tsx / index.js 等入口
+│     │  ├─ 复用 public.ts askLocalFilePath 选择或输入 TS/JS 入口文件
+│     │  ├─ 入口文件必须位于当前 package root 内
 │     │  ├─ 生成 bin/<command>.js 或 bin/<command>.mjs wrapper
 │     │  ├─ 完成后输出 entry / wrapper / command / changed files / linked files
 │     │  ├─ wrapper 支持 dev / start / stop / restart
@@ -100,14 +99,16 @@ create-todo-cli/
 │     │  ├─ initGithubPkg 命令入口
 │     │  ├─ 向上递归查找 .git 并定位项目根
 │     │  ├─ 判断定位目录是否存在 ../ 外部 pnpm workspace
+│     │  ├─ 提交和 push 前输出 GitHub 源路径
 │     │  ├─ 普通项目：git 初始化、GitHub 仓库创建或绑定、提交、push
 │     │  ├─ 普通项目：git push / git push for 兄弟目录 分支
 │     │  └─ release：复制 workspace 和外部包后提交到 <目录名>_release
 │     ├─ publishYml.ts
-│     │  ├─ 为当前项目生成 publish 配置
-│     │  ├─ 更新 package.json publishConfig / repository / homepage / bugs
-│     │  ├─ 生成 .npmrc
-│     │  └─ 生成 .github/workflows/publish.yml
+│     │  ├─ 多选 npmjs / GitHub Packages / GitHub prelease / 手动 npmjs 发布任务
+│     │  ├─ npmjs：更新 package.json publishConfig 并写入 publish.yml job
+│     │  ├─ GitHub Packages：按 scope 生成 .npmrc 并写入 publish.yml job
+│     │  ├─ GitHub prelease：仅在存在 ../ 外部 workspace 包时可选
+│     │  └─ 手动 npmjs：写入 package.json scripts.publish:npm
 │     └─ public.ts
 │        ├─ cwd package/workspace 信息读取
 │        ├─ package.json 读写
@@ -116,10 +117,21 @@ create-todo-cli/
 │        ├─ README 身份信息替换
 │        ├─ .gitignore 初始化
 │        ├─ pnpm workspace 初始化
-│        ├─ git init / origin 设置
+│        ├─ git init -b master / origin 设置
 │        ├─ GitHub 同名仓库创建或绑定
 │        └─ 通用命令、路径、文本工具
 ├─ bin/
+│  └─ create-todo-cli.js
+├─ codetpl/
+│  ├─ .gitignore
+│  ├─ .npmrc
+│  ├─ command.js
+│  ├─ pnpm-workspace.yaml
+│  ├─ publish.yml
+│  ├─ publish-job-npmjs.yml
+│  ├─ publish-job-github-packages.yml
+│  └─ publish-job-github-prelease.yml
+├─ scripts/
 │  └─ create-todo-cli.js
 ├─ package.json
 └─ README.md
@@ -131,7 +143,7 @@ create-todo-cli/
 create-todo-cli
 create-todo-cli help
 create-todo-cli createPkg my-app vite:react-ts
-create-todo-cli createPkg my-lib workspace-package
+create-todo-cli createPkg my-hono "command:pnpm create hono {name}"
 create-todo-cli distPkgBundle
 create-todo-cli distPkgSource
 create-todo-cli initPkgBin

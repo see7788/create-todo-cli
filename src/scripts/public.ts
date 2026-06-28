@@ -2,9 +2,10 @@ import type { PackageJson } from 'type-fest';
 import path from 'path';
 import fs from "fs"
 import { execSync, spawn } from 'child_process';
+import { fileURLToPath } from "node:url";
 import type prompts from 'prompts';
 import Mustache from 'mustache';
-import PublishYml from './publishYml.js';
+import cliPkg from "../../package.json" with { type: "json" };
 
 /** Application exit error. */
 export class Appexit extends Error {
@@ -41,6 +42,11 @@ type LocalPathOptions = {
     initialPath?: string;
     mode: LocalPathMode;
     shouldConfirm?: boolean;
+};
+
+type LocalPathChoice = {
+    title: string;
+    value: string;
 };
 
 type PackageJsonRecord = {
@@ -85,78 +91,17 @@ type TplBinCommandContext = {
 };
 
 type TplPublishJobContext = {
+    githubPreleaseCliRepo?: string;
     pnpmVersion: string;
     workingDirectory?: string;
 };
 
-/** 文件模板集中出口 - 先不接入调用方，只收敛散落的完整文件文本。 */
-export class TplBase {
-    public package_json_create(packageName: string): string {
-        return this.tplRender(`{
-  "name": {{{packageNameJson}}},
-  "version": "0.0.0",
-  "type": "module",
-  "main": "./src/index.ts",
-  "module": "./src/index.ts",
-  "types": "./src/index.ts",
-  "exports": {
-    ".": {
-      "types": "./src/index.ts",
-      "import": "./src/index.ts",
-      "default": "./src/index.ts"
-    }
-  },
-  "files": [
-    "src",
-    "README.md"
-  ],
-  "scripts": {
-    "dev": "tsx src/index.ts",
-    "build": "tsc --noEmit"
-  },
-  "devDependencies": {
-    "tsx": "^4.20.0",
-    "typescript": "^5.8.0"
-  }
-}
-`, {
-            packageNameJson: JSON.stringify(packageName),
-        });
-    }
-
-    public tsconfig_json_create(): string {
-        return `{
-  "compilerOptions": {
-    "target": "ESNext",
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
-    "strict": true,
-    "skipLibCheck": true,
-    "esModuleInterop": true,
-    "resolveJsonModule": true
-  },
-  "include": [
-    "src"
-  ]
-}
-`;
-    }
-
-    public index_ts_create(): string {
-        return `export {};
-`;
-    }
-
-    public README_md_create(packageName: string): string {
-        return this.tplRender(`# {{{packageName}}}
-`, { packageName });
-    }
+/** 文件模板核心渲染器，只在本文件内给具体模板基类复用。 */
+class FileTplCore {
+    private readonly templateRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../codetpl");
 
     public pnpm_workspace_yaml_create(): string {
-        return `packages:
-  - "libs/*"
-  - "apps/*"
-`;
+        return this.templateRead("pnpm-workspace.yaml");
     }
 
     public pnpm_workspace_yaml_release_create(packagePaths: string[]): string {
@@ -166,178 +111,7 @@ ${packagePaths.map(packagePath => `  - "${packagePath}"`).join("\n")}
     }
 
     public bin_command_js_create(context: TplBinCommandContext): string {
-        return this.tplRender(`#!/usr/bin/env node
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const wrapperDir = dirname(fileURLToPath(import.meta.url));
-const packageRoot = resolve(wrapperDir, {{{rootRelativePathJson}}});
-const entry = resolve(wrapperDir, {{{entryRelativePathJson}}});
-const tsx = join(packageRoot, "node_modules", "tsx", "dist", "cli.mjs");
-const commandName = {{{commandNameJson}}};
-const commandArg = process.argv[2];
-const command = commandArg === "dev" || commandArg === "start" || commandArg === "stop" || commandArg === "restart"
-  ? commandArg
-  : undefined;
-const passthroughArgs = command ? process.argv.slice(3) : process.argv.slice(2);
-
-if (!existsSync(tsx)) {
-  console.error("缺少 tsx，请先安装依赖");
-  process.exit(1);
-}
-
-const pathNormalize = (pathValue) => pathValue.toLowerCase().replaceAll("\\\\", "/");
-const nodeEnv = command === "dev"
-  ? "development"
-  : command === "start"
-    ? "production"
-    : process.env.NODE_ENV;
-const shouldWatch = command === "dev" || command === "restart";
-
-const processInfosGet = () => {
-  if (process.platform === "win32") {
-    const processResult = spawnSync("powershell.exe", [
-      "-NoProfile",
-      "-Command",
-      "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress",
-    ], {
-      encoding: "utf8",
-      windowsHide: true,
-    });
-    if (processResult.error) throw processResult.error;
-    if (processResult.status !== 0) {
-      throw new Error(\`Failed to query Windows processes: \${processResult.stderr || processResult.stdout}\`);
-    }
-    const parsed = JSON.parse(processResult.stdout || "[]");
-    return Array.isArray(parsed) ? parsed : [parsed];
-  }
-
-  const processResult = spawnSync("ps", ["-eo", "pid=,ppid=,command="], {
-    encoding: "utf8",
-    windowsHide: true,
-  });
-  if (processResult.error) throw processResult.error;
-  if (processResult.status !== 0) {
-    throw new Error(\`Failed to query processes: \${processResult.stderr || processResult.stdout}\`);
-  }
-  return (processResult.stdout ?? "")
-    .split(/\\r?\\n/)
-    .filter(Boolean)
-    .map((line) => {
-      const match = line.trim().match(/^(\\d+)\\s+(\\d+)\\s+(.*)$/);
-      if (!match) throw new Error(\`Cannot parse ps output line: \${line}\`);
-      return {
-        ProcessId: Number(match[1]),
-        ParentProcessId: Number(match[2]),
-        CommandLine: match[3],
-      };
-    });
-};
-
-const currentProcessIdsGet = (processInfos) => {
-  const processMap = new Map(processInfos.map((processInfo) => [
-    Number(processInfo.ProcessId),
-    Number(processInfo.ParentProcessId),
-  ]));
-  const currentProcessIds = new Set([process.pid]);
-  for (let processId = process.pid; processMap.has(processId);) {
-    const parentProcessId = processMap.get(processId);
-    if (parentProcessId === undefined || !Number.isInteger(parentProcessId) || currentProcessIds.has(parentProcessId)) break;
-    currentProcessIds.add(parentProcessId);
-    processId = parentProcessId;
-  }
-  return currentProcessIds;
-};
-
-const devStop = () => {
-  const processInfos = processInfosGet();
-  const currentProcessIds = currentProcessIdsGet(processInfos);
-  const entryPath = pathNormalize(entry);
-  const matchedProcesses = processInfos
-    .map((processInfo) => ({
-      processId: Number(processInfo.ProcessId),
-      parentProcessId: Number(processInfo.ParentProcessId),
-      commandLine: pathNormalize(String(processInfo.CommandLine ?? "")),
-    }))
-    .filter(({ processId, commandLine }) => (
-      Number.isInteger(processId)
-      && !currentProcessIds.has(processId)
-      && commandLine.includes(entryPath)
-    ));
-  const matchedProcessIds = new Set(matchedProcesses.map(({ processId }) => processId));
-  const processIds = matchedProcesses
-    .filter(({ parentProcessId }) => !matchedProcessIds.has(parentProcessId))
-    .map(({ processId }) => processId);
-
-  if (processIds.length === 0) {
-    console.log(\`\${commandName} is not running\`);
-    return;
-  }
-
-  const uniqueProcessIds = [...new Set(processIds)];
-  const stopResult = process.platform === "win32"
-    ? spawnSync("taskkill", [...uniqueProcessIds.flatMap((processId) => ["/PID", String(processId)]), "/T", "/F"], { stdio: "inherit", windowsHide: true })
-    : spawnSync("kill", ["-TERM", ...uniqueProcessIds.map(String)], { stdio: "inherit", windowsHide: true });
-  if (stopResult.error) throw stopResult.error;
-  if (typeof stopResult.status === "number" && stopResult.status !== 0) {
-    throw new Error(\`Failed to stop process ids: \${uniqueProcessIds.join(", ")}\`);
-  }
-  console.log(\`\${commandName} stopped \${processIds.length} process\${processIds.length === 1 ? "" : "es"}\`);
-};
-
-if (command === "stop") {
-  devStop();
-  process.exit(0);
-}
-if (command === "restart") devStop();
-
-let isStopping = false;
-const devStopAndExit = (exitCode) => {
-  if (isStopping) return;
-  isStopping = true;
-  try {
-    devStop();
-    process.exit(exitCode);
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : error);
-    process.exit(1);
-  }
-};
-
-const childArgs = shouldWatch
-  ? [tsx, "watch", "--clear-screen=false", entry, ...passthroughArgs]
-  : [tsx, entry, ...passthroughArgs];
-const child = spawn(process.execPath, childArgs, {
-  env: {
-    ...process.env,
-    ...(nodeEnv ? { NODE_ENV: nodeEnv } : {}),
-  },
-  stdio: "inherit",
-  shell: false,
-  windowsHide: true,
-});
-
-if (shouldWatch) {
-  process.once("SIGINT", () => devStopAndExit(130));
-  process.once("SIGTERM", () => devStopAndExit(143));
-}
-
-child.once("error", (error) => {
-  console.error(error.message);
-  process.exit(1);
-});
-
-child.once("exit", (code, signal) => {
-  if (isStopping) return;
-  if (signal) {
-    process.kill(process.pid, signal);
-    return;
-  }
-  process.exit(code ?? 0);
-});
-`, {
+        return this.templateRender("command.js", {
             commandNameJson: JSON.stringify(context.commandName),
             entryRelativePathJson: JSON.stringify(context.entryRelativePath),
             rootRelativePathJson: JSON.stringify(context.rootRelativePath),
@@ -346,7 +120,7 @@ child.once("exit", (code, signal) => {
 
     public command_shell_create(wrapperPath: string): string {
         return this.tplRender(`#!/usr/bin/env sh
-exec node {{{wrapperPathJson}}} "$@"
+exec node {{{wrapperPathJson}}} $@
 `, { wrapperPathJson: JSON.stringify(wrapperPath) });
     }
 
@@ -363,81 +137,19 @@ exit $LASTEXITCODE
     }
 
     public publish_yml_create(packageName: string): string {
-        return this.tplRender(`name: Publish {{{packageName}}}
-
-on:
-  push:
-    branches:
-      - master
-  workflow_dispatch:
-
-jobs:
-`, { packageName });
+        return this.templateRender("publish.yml", { packageName });
     }
 
     public publish_yml_job_npmjs_create(context: TplPublishJobContext): string {
-        return this.tplRender(`  npmjs:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write{{{jobDefaultsContent}}}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: {{{pnpmVersion}}}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: https://registry.npmjs.org
-      - run: pnpm install --no-frozen-lockfile
-      - run: pnpm run build --if-present
-      - run: pnpm publish --access public --no-git-checks --provenance
-        env:
-          NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}`, this.publish_yml_jobView(context));
+        return this.templateRender("publish-job-npmjs.yml", this.publish_yml_jobView(context));
     }
 
     public publish_yml_job_github_packages_create(context: TplPublishJobContext): string {
-        return this.tplRender(`  github_packages:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write{{{jobDefaultsContent}}}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: {{{pnpmVersion}}}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: https://npm.pkg.github.com
-      - run: pnpm install --no-frozen-lockfile
-      - run: pnpm run build --if-present
-      - run: pnpm publish --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: \${{ secrets.GITHUB_TOKEN }}`, this.publish_yml_jobView(context));
+        return this.templateRender("publish-job-github-packages.yml", this.publish_yml_jobView(context));
     }
 
-    public publish_yml_job_github_prelease_create(context: Pick<TplPublishJobContext, "pnpmVersion">): string {
-        return this.tplRender(`  github_prelease:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: pnpm/action-setup@v4
-        with:
-          version: {{{pnpmVersion}}}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - run: pnpm install --no-frozen-lockfile
-      - run: pnpm dlx github:see7788/create-todo-cli initGithubPkg
-        env:
-          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}`, context);
+    public publish_yml_job_github_prelease_create(context: Pick<TplPublishJobContext, "githubPreleaseCliRepo" | "pnpmVersion">): string {
+        return this.templateRender("publish-job-github-prelease.yml", this.publish_yml_jobView(context));
     }
 
     private publish_yml_defaults_create(workingDirectory = "."): string {
@@ -453,8 +165,26 @@ jobs:
     private publish_yml_jobView(context: TplPublishJobContext): Record<string, string> {
         return {
             jobDefaultsContent: this.publish_yml_defaults_create(context.workingDirectory),
+            githubPreleaseCliRepo: context.githubPreleaseCliRepo ?? "",
+            githubToken: "{{ secrets.GITHUB_TOKEN }}",
+            npmToken: "{{ secrets.NPM_TOKEN }}",
             pnpmVersion: context.pnpmVersion,
         };
+    }
+
+    public templateLines(name: string): string[] {
+        return this.templateRead(name)
+            .split(/\r?\n/)
+            .map(line => line.trim())
+            .filter(Boolean);
+    }
+
+    private templateRender(name: string, view: Record<string, unknown>): string {
+        return this.tplRender(this.templateRead(name), view);
+    }
+
+    private templateRead(name: string): string {
+        return fs.readFileSync(path.join(this.templateRoot, name), "utf-8");
     }
 
     private tplRender(templateText: string, view: Record<string, unknown>): string {
@@ -765,7 +495,10 @@ export default class LibBase {
         await this.githubProjectRepoEnsure(packageName);
         const identity = this.rewritePackageJsonIdentity(this.cwdProjectInfo.pkgPath, packageName);
         console.log(`已重写 package.json 身份信息: ${identity.packageName}`);
-        console.log(`package.json: ${this.pathDisplay(this.packagePath("package.json"))}`);
+        console.log("modified files:");
+        for (const filePath of this.identityModifiedFiles(this.cwdProjectInfo.pkgPath)) {
+            console.log(`- ${this.pathDisplay(filePath)}`);
+        }
     }
 
     public async setupPnpmWorkspaceRoot(): Promise<void> {
@@ -806,6 +539,15 @@ export default class LibBase {
         this.gitignoreSet(this.cwdProjectInfo.workspacePath);
         this.rootPackageJsonSet();
         console.log(`pnpm workspace 根配置已补齐: ${this.pathDisplay(this.cwdProjectInfo.workspacePath)}`);
+        console.log("modified files:");
+        for (const filePath of [
+            path.join(this.cwdProjectInfo.workspacePath, "pnpm-workspace.yaml"),
+            path.join(this.cwdProjectInfo.workspacePath, ".npmrc"),
+            path.join(this.cwdProjectInfo.workspacePath, ".gitignore"),
+            path.join(this.cwdProjectInfo.workspacePath, "package.json"),
+        ]) {
+            console.log(`- ${this.pathDisplay(filePath)}`);
+        }
     }
 
     protected async publishWorkflowAsk(targetPath: string, identity: ProjectIdentity): Promise<void> {
@@ -825,6 +567,7 @@ export default class LibBase {
             return;
         }
 
+        const { default: PublishYml } = await import("./publishYml.js");
         const result = await new PublishYml().createForProject({
             packageName: identity.packageName,
             targetPath,
@@ -842,24 +585,15 @@ export default class LibBase {
         if (fs.existsSync(filePath)) {
             return;
         }
-        fs.writeFileSync(filePath, `packages:
-  - "libs/*"
-  - "apps/*"
-`, "utf-8");
+        fs.writeFileSync(filePath, new FileTplCore().pnpm_workspace_yaml_create(), "utf-8");
     }
 
     private npmrcSet(): void {
-        this.linesFileEnsure(path.join(this.cwdProjectInfo.workspacePath, ".npmrc"), ["store-dir=./.pnpm-store"]);
+        this.linesFileEnsure(path.join(this.cwdProjectInfo.workspacePath, ".npmrc"), new FileTplCore().templateLines(".npmrc"));
     }
 
     protected gitignoreSet(targetPath: string): void {
-        this.linesFileEnsure(path.join(targetPath, ".gitignore"), [
-            ".pnpm-store/**",
-            "**/node_modules/**",
-            "**/dist/**",
-            "**/**_bak/",
-            "**/**.bak",
-        ]);
+        this.linesFileEnsure(path.join(targetPath, ".gitignore"), new FileTplCore().templateLines(".gitignore"));
     }
 
     protected async gitProjectEnsure(targetPath: string, packageName: string): Promise<GitHubRepo | undefined> {
@@ -871,12 +605,7 @@ export default class LibBase {
         }
 
         if (!fs.existsSync(path.join(targetPath, ".git"))) {
-            try {
-                await this.commandRunInherit("git init -b master", targetPath, "git init");
-            } catch {
-                await this.commandRunInherit("git init", targetPath, "git init");
-                await this.commandRunInherit("git checkout -B master", targetPath, "git checkout master");
-            }
+            await this.commandRunInherit("git init -b master", targetPath, "git init");
             console.log(`已初始化 git 仓库: ${this.pathDisplay(targetPath)}`);
         }
 
@@ -1006,6 +735,13 @@ export default class LibBase {
         }
         content = content.replaceAll(/name:\s*["']?[^"'\n]+["']?/gi, `name: ${identity.packageName}`);
         fs.writeFileSync(readmePath, content, "utf-8");
+    }
+
+    private identityModifiedFiles(targetPath: string): string[] {
+        return [
+            path.join(targetPath, "package.json"),
+            path.join(targetPath, "README.md"),
+        ].filter(filePath => fs.existsSync(filePath));
     }
 
     private async githubProjectRepoEnsure(packageName: string): Promise<GitHubRepo | undefined> {
@@ -1273,28 +1009,34 @@ export default class LibBase {
         const shouldConfirm = options.shouldConfirm ?? true;
 
         while (true) {
-            const response = await prompts.default({
-                type: "text",
-                name: "pathValue",
-                message: `Please enter ${modeName} path`,
-                initial: currentPath,
-            });
-            if (!response.pathValue) {
-                throw new Error("user-cancelled");
+            const pathChoices = this.localPathChoices(options, currentPath);
+            if (pathChoices.length > 0) {
+                const response = await prompts.default({
+                    type: "select",
+                    name: "pathValue",
+                    message: `Please select ${modeName} path`,
+                    choices: pathChoices,
+                });
+                if (!response.pathValue) {
+                    throw new Error("user-cancelled");
+                }
+                currentPath = String(response.pathValue);
+            } else {
+                throw new Appexit(`No selectable ${modeName} path: ${currentPath}`);
             }
 
-            currentPath = path.resolve(String(response.pathValue).trim());
+            currentPath = path.resolve(currentPath.trim());
+            if (options.mode === "file" && fs.existsSync(currentPath) && fs.statSync(currentPath).isDirectory()) {
+                continue;
+            }
+
             const exists = fs.existsSync(currentPath);
             const stat = exists ? fs.statSync(currentPath) : undefined;
             const modeMatched = options.mode === "file" ? stat?.isFile() : stat?.isDirectory();
-            const extensionMatched = options.mode !== "file"
-                || !options.fileExtensions?.length
-                || options.fileExtensions.includes(path.extname(currentPath));
+            const extensionMatched = this.localPathExtensionMatched(currentPath, options);
 
             if (!exists || !modeMatched || !extensionMatched) {
-                console.error(`Invalid ${modeName} path: ${currentPath}`);
-                currentPath = "";
-                continue;
+                throw new Appexit(`Invalid ${modeName} path: ${currentPath}`);
             }
 
             if (!shouldConfirm) {
@@ -1314,5 +1056,215 @@ export default class LibBase {
                 return currentPath;
             }
         }
+    }
+
+    private localPathChoices(options: LocalPathOptions, currentPath: string): LocalPathChoice[] {
+        const directoryPath = this.localPathCurrentDirectory(currentPath);
+        const defaultPath = path.resolve(currentPath);
+        const candidatePaths: LocalPathChoice[] = [];
+        const parentPath = path.dirname(directoryPath);
+
+        if (parentPath !== directoryPath) {
+            candidatePaths.push({
+                title: "../",
+                value: parentPath,
+            });
+        }
+
+        if (this.localPathMatched(defaultPath, options)) {
+            candidatePaths.push({
+                title: path.basename(defaultPath),
+                value: defaultPath,
+            });
+        }
+
+        const dirents = this.localPathDirents(directoryPath);
+        const directories = dirents
+            .filter(dirent => dirent.isDirectory())
+            .filter(dirent => !this.localPathIgnoredDirectoryName(dirent.name))
+            .map(dirent => path.join(directoryPath, dirent.name))
+            .sort((leftPath, rightPath) => leftPath.localeCompare(rightPath));
+        const files = dirents
+            .filter(dirent => dirent.isFile())
+            .map(dirent => path.join(directoryPath, dirent.name))
+            .filter(filePath => this.localPathMatched(filePath, options))
+            .sort((leftPath, rightPath) => leftPath.localeCompare(rightPath));
+
+        for (const directory of directories) {
+            candidatePaths.push({
+                title: `${path.basename(directory)}/`,
+                value: directory,
+            });
+        }
+
+        for (const file of files) {
+            if (file === defaultPath && candidatePaths.some(choice => choice.value === file)) {
+                continue;
+            }
+            candidatePaths.push({
+                title: path.basename(file),
+                value: file,
+            });
+        }
+
+        return candidatePaths.slice(0, 40);
+    }
+
+    private localPathCurrentDirectory(currentPath: string): string {
+        const resolvedPath = path.resolve(currentPath);
+        if (!fs.existsSync(resolvedPath)) {
+            throw new Appexit(`Path does not exist: ${resolvedPath}`);
+        }
+        const stat = fs.statSync(resolvedPath);
+        return stat.isDirectory() ? resolvedPath : path.dirname(resolvedPath);
+    }
+
+    private localPathDirents(directoryPath: string): fs.Dirent[] {
+        try {
+            return fs.readdirSync(directoryPath, { withFileTypes: true });
+        } catch {
+            return [];
+        }
+    }
+
+    private localPathIgnoredDirectoryName(directoryName: string): boolean {
+        return new Set([
+            ".git",
+            ".log",
+            ".next",
+            ".output",
+            ".turbo",
+            "build",
+            "coverage",
+            "dist",
+            "node_modules",
+        ]).has(directoryName);
+    }
+
+    private localPathMatched(filePath: string, options: LocalPathOptions): boolean {
+        try {
+            if (!fs.existsSync(filePath)) {
+                return false;
+            }
+            const stat = fs.statSync(filePath);
+            const modeMatched = options.mode === "file" ? stat.isFile() : stat.isDirectory();
+            if (!modeMatched) {
+                return false;
+            }
+        } catch {
+            return false;
+        }
+        return options.mode !== "file"
+            || this.localPathExtensionMatched(filePath, options);
+    }
+
+    private localPathExtensionMatched(filePath: string, options: LocalPathOptions): boolean {
+        if (options.mode !== "file" || !options.fileExtensions?.length) {
+            return true;
+        }
+        if (filePath.endsWith(".d.ts")) {
+            return false;
+        }
+        const fileExtension = path.extname(filePath).toLowerCase();
+        return options.fileExtensions
+            .map(extension => extension.toLowerCase())
+            .includes(fileExtension);
+    }
+
+    protected tplStringRequired(name: string, value: string | undefined): string {
+        if (!value) {
+            throw new Appexit(`Tpl context missing: ${name}`);
+        }
+        return value;
+    }
+}
+
+export class WorkspaceTpl extends LibBase {
+    private readonly fileTpl = new FileTplCore();
+    protected workspaceReleasePackagePaths?: string[];
+
+    protected pnpm_workspace_yaml_create(): string {
+        return this.fileTpl.pnpm_workspace_yaml_create();
+    }
+
+    protected pnpm_workspace_yaml_release_create(): string {
+        if (!this.workspaceReleasePackagePaths) {
+            throw new Appexit("Tpl context missing: workspaceReleasePackagePaths");
+        }
+        return this.fileTpl.pnpm_workspace_yaml_release_create(this.workspaceReleasePackagePaths);
+    }
+}
+
+export class BinTpl extends LibBase {
+    private readonly fileTpl = new FileTplCore();
+    protected binCommandName?: string;
+    protected binEntryRelativePath?: string;
+    protected binRootRelativePath?: string;
+    protected commandWrapperPath?: string;
+
+    protected bin_command_js_create(): string {
+        return this.fileTpl.bin_command_js_create({
+            commandName: this.tplStringRequired("binCommandName", this.binCommandName),
+            entryRelativePath: this.tplStringRequired("binEntryRelativePath", this.binEntryRelativePath),
+            rootRelativePath: this.tplStringRequired("binRootRelativePath", this.binRootRelativePath),
+        });
+    }
+
+    protected command_shell_create(): string {
+        return this.fileTpl.command_shell_create(this.tplStringRequired("commandWrapperPath", this.commandWrapperPath));
+    }
+
+    protected command_cmd_create(): string {
+        return this.fileTpl.command_cmd_create(this.tplStringRequired("commandWrapperPath", this.commandWrapperPath));
+    }
+
+    protected command_ps1_create(): string {
+        return this.fileTpl.command_ps1_create(this.tplStringRequired("commandWrapperPath", this.commandWrapperPath));
+    }
+}
+
+export class PublishTpl extends LibBase {
+    private readonly fileTpl = new FileTplCore();
+    protected publishPackageName?: string;
+    protected publishPnpmVersion?: string;
+    protected publishWorkingDirectory?: string;
+
+    constructor() {
+        super({ requirePackage: false });
+    }
+
+    protected publish_yml_create(): string {
+        return this.fileTpl.publish_yml_create(this.tplStringRequired("publishPackageName", this.publishPackageName));
+    }
+
+    protected publish_yml_job_npmjs_create(): string {
+        return this.fileTpl.publish_yml_job_npmjs_create({
+            pnpmVersion: this.tplStringRequired("publishPnpmVersion", this.publishPnpmVersion),
+            workingDirectory: this.publishWorkingDirectory,
+        });
+    }
+
+    protected publish_yml_job_github_packages_create(): string {
+        return this.fileTpl.publish_yml_job_github_packages_create({
+            pnpmVersion: this.tplStringRequired("publishPnpmVersion", this.publishPnpmVersion),
+            workingDirectory: this.publishWorkingDirectory,
+        });
+    }
+
+    protected publish_yml_job_github_prelease_create(): string {
+        return this.fileTpl.publish_yml_job_github_prelease_create({
+            githubPreleaseCliRepo: this.githubPreleaseCliRepoGet(),
+            pnpmVersion: this.tplStringRequired("publishPnpmVersion", this.publishPnpmVersion),
+        });
+    }
+
+    private githubPreleaseCliRepoGet(): string {
+        const repositoryUrl = typeof cliPkg.repository === "string" ? cliPkg.repository : cliPkg.repository?.url;
+        const sourceUrl = repositoryUrl ?? cliPkg.homepage;
+        const match = sourceUrl?.match(/github\.com[:/]([^/]+)\/(.+?)(?:\.git)?$/i);
+        if (!match?.[1] || !match[2]) {
+            throw new Appexit("Cannot infer create-todo-cli GitHub repository from package.json");
+        }
+        return `${match[1]}/${match[2]}`;
     }
 }

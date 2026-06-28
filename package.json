@@ -4,6 +4,7 @@
   "description": "",
   "files": [
     "bin/",
+    "codetpl/",
     "src/"
   ],
   "type": "module",

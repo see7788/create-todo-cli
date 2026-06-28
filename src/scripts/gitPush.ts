@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import prompts from "prompts";
-import LibBase, { Appexit } from "./public.js";
+import { Appexit, WorkspaceTpl } from "./public.js";
 
 type GitRemote = {
   owner: string;
@@ -43,7 +43,7 @@ type WorkspaceSpecTarget = {
 
 type PlatformPushMode = "current" | "siblings";
 
-class GitPush extends LibBase {
+class GitPush extends WorkspaceTpl {
   private projectRoot!: string;
   private projectRepoName!: string;
   private releaseRepoName!: string;
@@ -77,6 +77,7 @@ class GitPush extends LibBase {
     if (workspacePlan.externalPackages.length === 0) {
       throw new Appexit("pnpm-workspace.yaml 中没有 ../ 开头的外部 workspace 包");
     }
+    console.log(`GitHub 提交源路径: ${this.pathDisplay(this.projectRoot)}`);
 
     const sourceRepo = await this.platformGitProjectEnsure(this.projectRoot, this.projectRepoName);
     if (!sourceRepo) {
@@ -173,6 +174,7 @@ class GitPush extends LibBase {
   }
 
   private async platformProjectPushTarget(targetPath: string): Promise<void> {
+    console.log(`GitHub 提交源路径: ${this.pathDisplay(targetPath)}`);
     const repoName = this.projectRepoNameGet(targetPath);
     const projectRepo = this.platformGithubProjectRepoGet(repoName, targetPath);
     if (!projectRepo) {
@@ -205,7 +207,7 @@ class GitPush extends LibBase {
       throw new Appexit(`不存在 pnpm-workspace.yaml: ${workspacePath}`);
     }
 
-    const packages = LibBase.pnpmWorkspacePackagesParse(readFileSync(workspacePath, "utf-8"));
+    const packages = WorkspaceTpl.pnpmWorkspacePackagesParse(readFileSync(workspacePath, "utf-8"));
     const externalSpecs = packages.filter(item => this.workspaceSpecIsExternal(item));
     return {
       internalPackages: packages.filter(item => !item.startsWith("!") && !this.workspaceSpecIsExternal(item)),
@@ -229,7 +231,7 @@ class GitPush extends LibBase {
     if (!existsSync(workspacePath)) {
       return false;
     }
-    return LibBase.pnpmWorkspacePackagesParse(readFileSync(workspacePath, "utf-8"))
+    return WorkspaceTpl.pnpmWorkspacePackagesParse(readFileSync(workspacePath, "utf-8"))
       .some(item => this.workspaceSpecIsExternal(item));
   }
 
@@ -245,13 +247,13 @@ class GitPush extends LibBase {
   private sourceRepoCommitIfDirty(): void {
     const status = this.commandRead("git status --porcelain", this.projectRoot);
     if (!status) {
-      console.log("源仓库没有变更，跳过提交");
+      console.log(`源仓库没有变更，跳过提交: ${this.pathDisplay(this.projectRoot)}`);
       return;
     }
 
     this.commandRun("git add -A", this.projectRoot);
     this.commandRun(`git commit -m ${this.shellArg("release: snapshot source workspace")}`, this.projectRoot);
-    console.log("源仓库已提交，继续执行 release");
+    console.log(`源仓库已提交，继续执行 release: ${this.pathDisplay(this.projectRoot)}`);
   }
 
   private gitRemoteParse(url: string): GitRemote | undefined {
@@ -361,11 +363,8 @@ class GitPush extends LibBase {
       ...workspacePlan.internalPackages,
       ...workspacePlan.externalPackages.map(item => item.targetRelativePath),
     ]));
-    writeFileSync(
-      join(this.releaseRoot, "pnpm-workspace.yaml"),
-      `packages:\n${packages.map(item => `  - "${item}"`).join("\n")}\n`,
-      "utf-8",
-    );
+    this.workspaceReleasePackagePaths = packages;
+    writeFileSync(join(this.releaseRoot, "pnpm-workspace.yaml"), this.pnpm_workspace_yaml_release_create(), "utf-8");
   }
 
   private externalWorkspacePackagesCollect(workspaceRoot: string, specs: string[]): ExternalWorkspacePackage[] {
@@ -408,7 +407,7 @@ class GitPush extends LibBase {
     }
 
     state.workspaceRoots.add(sourceRoot);
-    const specs = LibBase.pnpmWorkspacePackagesParse(
+    const specs = WorkspaceTpl.pnpmWorkspacePackagesParse(
       readFileSync(join(sourceRoot, "pnpm-workspace.yaml"), "utf-8"),
     );
     for (const target of this.workspaceSpecTargets(sourceRoot, specs)) {
@@ -563,11 +562,12 @@ class GitPush extends LibBase {
   }
 
   private releaseRepoCommitAndPush(): void {
+    console.log(`GitHub release 提交源路径: ${this.pathDisplay(this.releaseRoot)}`);
     this.commandRun("git checkout -B master", this.releaseRoot);
     this.commandRun("git add -A", this.releaseRoot);
 
     if (!this.commandRead("git status --porcelain", this.releaseRoot)) {
-      console.log("release 仓库没有变更，跳过提交");
+      console.log(`release 仓库没有变更，跳过提交: ${this.pathDisplay(this.releaseRoot)}`);
       this.commandRun("git push -u origin master", this.releaseRoot);
       return;
     }
@@ -626,12 +626,7 @@ class GitPush extends LibBase {
     }
 
     if (!existsSync(join(targetPath, ".git"))) {
-      try {
-        await this.platformCommandRunInherit("git init -b master", targetPath, "git init");
-      } catch {
-        await this.platformCommandRunInherit("git init", targetPath, "git init");
-        await this.platformCommandRunInherit("git checkout -B master", targetPath, "git checkout");
-      }
+      await this.platformCommandRunInherit("git init -b master", targetPath, "git init");
       console.log(`已初始化 git 仓库: ${this.pathDisplay(targetPath)}`);
     }
 
@@ -682,6 +677,7 @@ class GitPush extends LibBase {
     await this.platformCommandRunInherit("git add -A", targetPath, "git add");
     try {
       await this.platformCommandRunInherit(`git commit -m ${this.shellArg("chore: initial commit")}`, targetPath, "git commit");
+      console.log(`已创建初始提交: ${this.pathDisplay(targetPath)}`);
     } catch {
       const status = this.commandReadOptional("git status --porcelain", targetPath);
       if (!status) {
@@ -690,7 +686,7 @@ class GitPush extends LibBase {
           targetPath,
           "git commit --allow-empty",
         );
-        console.log("工作区无更改，已创建空提交");
+        console.log(`工作区无更改，已创建空提交: ${this.pathDisplay(targetPath)}`);
         return;
       }
       throw new Appexit("创建初始提交失败");
@@ -698,6 +694,7 @@ class GitPush extends LibBase {
   }
 
   private async platformGitPushHead(targetPath: string): Promise<void> {
+    console.log(`GitHub push 源路径: ${this.pathDisplay(targetPath)}`);
     await this.platformCommandRunInherit(
       `git -c credential.helper= -c credential.helper="!gh auth git-credential" push -u origin HEAD`,
       targetPath,

@@ -82,6 +82,7 @@ class DistPkg extends LibBase {
     });
 
     console.log(`\n完成 npm 包抽取: ${this.pathDisplay(result.dist)}`);
+    console.log(`来源项目: ${this.findPackageRoot(this.entryIndex)}`);
     console.log(`入口文件: ${this.entryIndex}`);
     console.log(`package.json: ${result.packageJson}`);
     await this.finalizeProjectOutput(result.dist, this.toPackageName(basename(result.dist)));
