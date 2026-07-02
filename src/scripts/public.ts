@@ -234,6 +234,25 @@ export default class LibBase {
         return packages;
     }
 
+    public static gitRootFind(startPath = process.cwd()): string | undefined {
+        let dir = path.resolve(startPath);
+        while (path.dirname(dir) !== dir) {
+            if (fs.existsSync(path.join(dir, ".git"))) {
+                return dir;
+            }
+            dir = path.dirname(dir);
+        }
+        return undefined;
+    }
+
+    public static pathNormalize(filePath: string): string {
+        return path.resolve(filePath).replace(/\\/g, "/").toLowerCase();
+    }
+
+    public static pathEqual(leftPath: string, rightPath: string): boolean {
+        return this.pathNormalize(leftPath) === this.pathNormalize(rightPath);
+    }
+
     public static hasExternalPnpmWorkspace(startPath = process.cwd()): boolean {
         const workspaceRoot = this.pnpmWorkspaceRootFind(startPath);
         if (!workspaceRoot) {
@@ -597,6 +616,12 @@ export default class LibBase {
     }
 
     protected async gitProjectEnsure(targetPath: string, packageName: string): Promise<GitHubRepo | undefined> {
+        const parentGitRoot = this.parentGitRootFind(targetPath);
+        if (parentGitRoot) {
+            console.log(`父级已存在 git 仓库，跳过子项目 git/GitHub 初始化: ${this.pathDisplay(parentGitRoot)}`);
+            return undefined;
+        }
+
         const normalizedPackageName = this.toPackageName(packageName);
         const projectRepo = this.githubProjectRepoGet(normalizedPackageName);
         if (!projectRepo) {
@@ -657,6 +682,13 @@ export default class LibBase {
         }
 
         return projectRepo;
+    }
+
+    private parentGitRootFind(targetPath: string): string | undefined {
+        const targetRoot = path.resolve(targetPath);
+        const parentRoot = path.dirname(targetRoot);
+        const gitRoot = LibBase.gitRootFind(parentRoot);
+        return gitRoot && !LibBase.pathEqual(gitRoot, targetRoot) ? gitRoot : undefined;
     }
 
     private rootPackageJsonSet(): void {
@@ -933,7 +965,7 @@ export default class LibBase {
         return remote ? this.parseGitHubRepo(remote) : undefined;
     }
 
-    private parseGitHubRepo(value: string | undefined): GitHubRepo | undefined {
+     parseGitHubRepo(value: string | undefined): GitHubRepo | undefined {
         const match = value?.match(/github\.com[:/]([^/]+)\/(.+?)(?:\.git)?$/i);
         if (!match) {
             return undefined;
