@@ -25,8 +25,8 @@ class CreateNodeBin extends BinTpl {
     const target = await this.nodeBinTargetAsk(pkg, initialCommandName);
     const wrapperPath = this.packagePath(target.wrapperPath);
 
-    this.nodeBinWrapperWrite(target);
     this.packageJsonSet(packageJsonPath, pkg, target);
+    this.nodeBinWrapperWrite(target);
     const linkedFiles = this.pnpmLinkRun(pkg);
 
     console.log("init package bin complete");
@@ -127,12 +127,27 @@ class CreateNodeBin extends BinTpl {
     const entryPath = resolve(target.entryPath);
     const rootRelativePath = this.nodeImportPath(dirname(wrapperPath), this.packagePath());
     const entryRelativePath = this.nodeImportPath(dirname(wrapperPath), entryPath);
-    this.binCommandName = target.commandName;
-    this.binRootRelativePath = rootRelativePath;
-    this.binEntryRelativePath = entryRelativePath;
-
     mkdirSync(dirname(wrapperPath), { recursive: true });
-    writeFileSync(wrapperPath, this.bin_command_js_create(), "utf-8");
+    writeFileSync(
+      wrapperPath,
+      this.nodeBinWrapperSourceCreate({
+        commandName: target.commandName,
+        rootRelativePath,
+        entryRelativePath,
+      }),
+      "utf-8",
+    );
+  }
+
+  private nodeBinWrapperSourceCreate(context: {
+    commandName: string;
+    rootRelativePath: string;
+    entryRelativePath: string;
+  }): string {
+    this.binCommandName = context.commandName;
+    this.binRootRelativePath = context.rootRelativePath;
+    this.binEntryRelativePath = context.entryRelativePath;
+    return this.bin_command_js_create();
   }
 
   private packageJsonSet(packageJsonPath: string, pkg: NodeBinPackageJson, target: NodeBinTarget): void {

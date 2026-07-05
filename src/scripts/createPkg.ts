@@ -8,25 +8,28 @@ type CreateTarget = { name: string; path: string };
 
 type SourceChoice = {
   title: string;
+  aliases?: string[];
   create: (c: CreateTarget) => string | Promise<string>;
 };
 
 class CreatePkg extends LibBase {
   private sourceChoices: SourceChoice[] = [
-    { title: "Vite", create: (c) => `pnpm create vite "${c.name}"` },
-    { title: "VSCode", create: (c) => `pnpm create vscode-extension "${c.name}"` },
-    { title: "Electron", create: (c) => `degit see7788/electron-template "${c.name}"` },
-    { title: "TS", create: (c) => `degit see7788/ts-template "${c.name}"` },
-    { title: "Hono", create: (c) => `pnpm create hono "${c.name}"` },
+    { title: "Vite脚手架", aliases: ["vite"], create: (c) => `pnpm create vite "${c.name}"` },
+    { title: "VSCode插件脚手架", aliases: ["vscode", "vscode-extension"], create: (c) => `pnpm create vscode-extension "${c.name}"` },
+    { title: "Electron脚手架", aliases: ["electron"], create: (c) => `degit see7788/electron-template "${c.name}"` },
+    { title: "TS脚手架", aliases: ["ts", "typescript"], create: (c) => `degit see7788/ts-template "${c.name}"` },
+    { title: "Hono脚手架", aliases: ["hono"], create: (c) => `pnpm create hono "${c.name}"` },
     {
-      title: "GitHub",
+      title: "degit克隆",
+      aliases: ["degit", "github"],
       create: async () => {
         const repo = await this.askRepo();
         return `degit ${repo} "${repo.split("/")[1]}"`;
       }
     },
     {
-      title: "Custom",
+      title: "Custom命令",
+      aliases: ["command", "custom"],
       create: async (c) => {
         const cmd = await this.askCmd();
         return cmd.replaceAll("{name}", c.name).replaceAll("{path}", c.path);
@@ -34,9 +37,11 @@ class CreatePkg extends LibBase {
     }
   ];
 
-  async task1(initial?: string) {
+  async task1(initial?: string, initialSource?: string) {
     const target = await this.askTarget(initial);
-    const source = await this.askSource();
+    const source = initialSource
+      ? this.sourceChoiceFromInput(initialSource)
+      : await this.askSource();
 
     try {
       const cmd = await source.create(target);
@@ -77,6 +82,37 @@ class CreatePkg extends LibBase {
 
     if (r.v === undefined) throw new Error("cancel");
     return this.sourceChoices[r.v];
+  }
+
+  private sourceChoiceFromInput(input: string): SourceChoice {
+    const source = input.trim();
+    if (!source) throw new Error("source is empty");
+
+    if (source.startsWith("command:")) {
+      const command = source.slice("command:".length).trim();
+      if (!command) throw new Error("command source is empty");
+      return {
+        title: "Custom命令",
+        create: (c) => command.replaceAll("{name}", c.name).replaceAll("{path}", c.path),
+      };
+    }
+
+    if (source.startsWith("vite:")) {
+      const template = source.slice("vite:".length).trim();
+      if (!template) throw new Error("vite template is empty");
+      return {
+        title: `Vite脚手架:${template}`,
+        create: (c) => `pnpm create vite "${c.name}" -- --template ${template}`,
+      };
+    }
+
+    const normalizedSource = source.toLowerCase();
+    const found = this.sourceChoices.find(choice => (
+      choice.title.toLowerCase() === normalizedSource
+      || choice.aliases?.some(alias => alias.toLowerCase() === normalizedSource)
+    ));
+    if (!found) throw new Error(`unknown source: ${source}`);
+    return found;
   }
 
   async askRepo() {

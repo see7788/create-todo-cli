@@ -1,6 +1,26 @@
-# create-todo-cli
+## 快速使用
 
-交互式 TypeScript 项目脚手架工具：创建项目、抽取 npm 包、初始化 package 配置、初始化 GitHub 仓库、同步 pnpm workspace release 仓库。
+前置条件：
+- 已安装 Node.js 和 pnpm
+- 已安装并配置好 Codex CLI
+- 已安装 tsx 依赖
+
+使用方式：
+```bash
+pnpm dlx github:see7788/create-todo-cli
+pnpm dlx github:see7788/create-todo-cli help
+pnpm dlx github:see7788/create-todo-cli createPkg my-app vite:react-ts
+pnpm dlx github:see7788/create-todo-cli createPkg my-hono "command:pnpm create hono {name}"
+pnpm dlx github:see7788/create-todo-cli distPkgBundle
+pnpm dlx github:see7788/create-todo-cli distPkgSource
+pnpm dlx github:see7788/create-todo-cli initPkgBin
+pnpm dlx github:see7788/create-todo-cli initGithubPkg
+```
+
+## 源码说明
+交互式 TypeScript 项目脚手架工具，主要能力包括：创建项目、抽取 npm 包、初始化 package 配置、初始化 GitHub 仓库，以及同步 pnpm workspace release 仓库。
+
+它的入口位于 src/index.ts，实际执行时会根据命令名注册到 CLI 命令表，并由 scripts 目录下的脚本完成具体逻辑，例如创建项目、打包发布、初始化 bin、初始化 GitHub 配置等。
 
 ## 项目结构
 ```txt
@@ -135,17 +155,4 @@ create-todo-cli/
 │  └─ create-todo-cli.js
 ├─ package.json
 └─ README.md
-```
-
-## 常用命令
-
-```bash
-create-todo-cli
-create-todo-cli help
-create-todo-cli createPkg my-app vite:react-ts
-create-todo-cli createPkg my-hono "command:pnpm create hono {name}"
-create-todo-cli distPkgBundle
-create-todo-cli distPkgSource
-create-todo-cli initPkgBin
-create-todo-cli initGithubPkg
 ```
