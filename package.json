@@ -3,8 +3,7 @@
   "version": "v1.3.6",
   "description": "",
   "files": [
-    "bin/",
-    "codetpl/",
+    "scripts/",
     "src/"
   ],
   "type": "module",
@@ -17,7 +16,7 @@
     "access": "public"
   },
   "bin": {
-    "create-todo-cli": "./bin/create-todo-cli.js"
+    "create-todo-cli": "./scripts/create-todo-cli.js"
   },
   "engines": {
     "node": ">=18"

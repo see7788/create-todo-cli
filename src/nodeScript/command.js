@@ -58,7 +58,7 @@ if (!tsx) {
   process.exit(1);
 }
 
-const pathNormalize = (pathValue) => pathValue.toLowerCase().replaceAll("\\\\", "/");
+const pathNormalize = (pathValue) => pathValue.toLowerCase().replaceAll("\\", "/");
 const nodeEnv = command === "dev"
   ? "development"
   : command === "start"
@@ -78,7 +78,7 @@ const processInfosGet = () => {
     });
     if (processResult.error) throw processResult.error;
     if (processResult.status !== 0) {
-      throw new Error(\`Failed to query Windows processes: \${processResult.stderr || processResult.stdout}\`);
+      throw new Error(`Failed to query Windows processes: ${processResult.stderr || processResult.stdout}`);
     }
     const parsed = JSON.parse(processResult.stdout || "[]");
     return Array.isArray(parsed) ? parsed : [parsed];
@@ -90,14 +90,14 @@ const processInfosGet = () => {
   });
   if (processResult.error) throw processResult.error;
   if (processResult.status !== 0) {
-    throw new Error(\`Failed to query processes: \${processResult.stderr || processResult.stdout}\`);
+    throw new Error(`Failed to query processes: ${processResult.stderr || processResult.stdout}`);
   }
   return (processResult.stdout ?? "")
-    .split(/\\r?\\n/)
+    .split(/\r?\n/)
     .filter(Boolean)
     .map((line) => {
-      const match = line.trim().match(/^(\\d+)\\s+(\\d+)\\s+(.*)$/);
-      if (!match) throw new Error(\`Cannot parse ps output line: \${line}\`);
+      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+      if (!match) throw new Error(`Cannot parse ps output line: ${line}`);
       return {
         ProcessId: Number(match[1]),
         ParentProcessId: Number(match[2]),
@@ -142,7 +142,7 @@ const devStop = () => {
     .map(({ processId }) => processId);
 
   if (processIds.length === 0) {
-    console.log(\`\${commandName} is not running\`);
+    console.log(`${commandName} is not running`);
     return;
   }
 
@@ -152,9 +152,9 @@ const devStop = () => {
     : spawnSync("kill", ["-TERM", ...uniqueProcessIds.map(String)], { stdio: "inherit", windowsHide: true });
   if (stopResult.error) throw stopResult.error;
   if (typeof stopResult.status === "number" && stopResult.status !== 0) {
-    throw new Error(\`Failed to stop process ids: \${uniqueProcessIds.join(", ")}\`);
+    throw new Error(`Failed to stop process ids: ${uniqueProcessIds.join(", ")}`);
   }
-  console.log(\`\${commandName} stopped \${processIds.length} process\${processIds.length === 1 ? "" : "es"}\`);
+  console.log(`${commandName} stopped ${processIds.length} process${processIds.length === 1 ? "" : "es"}`);
 };
 
 if (command === "stop") {
@@ -192,6 +192,15 @@ const child = spawn(process.execPath, childArgs, {
 if (shouldWatch) {
   process.once("SIGINT", () => devStopAndExit(130));
   process.once("SIGTERM", () => devStopAndExit(143));
+} else {
+  const childStopAndExit = (exitCode, signal) => {
+    if (isStopping) return;
+    isStopping = true;
+    child.once("exit", () => process.exit(exitCode));
+    child.kill(signal);
+  };
+  process.once("SIGINT", () => childStopAndExit(130, "SIGINT"));
+  process.once("SIGTERM", () => childStopAndExit(143, "SIGTERM"));
 }
 
 child.once("error", (error) => {

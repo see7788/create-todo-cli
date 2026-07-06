@@ -2,49 +2,35 @@ import { existsSync, rmSync } from "node:fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import prompts from "prompts";
-import LibBase, { Appexit } from "./public.js";
+import GitBase, { Appexit } from "../public/git";
 
 type CreateTarget = { name: string; path: string };
 
-type SourceChoice = {
-  title: string;
-  aliases?: string[];
-  create: (c: CreateTarget) => string | Promise<string>;
-};
-
-class CreatePkg extends LibBase {
-  private sourceChoices: SourceChoice[] = [
-    { title: "Vite脚手架", aliases: ["vite"], create: (c) => `pnpm create vite "${c.name}"` },
-    { title: "VSCode插件脚手架", aliases: ["vscode", "vscode-extension"], create: (c) => `pnpm create vscode-extension "${c.name}"` },
-    { title: "Electron脚手架", aliases: ["electron"], create: (c) => `degit see7788/electron-template "${c.name}"` },
-    { title: "TS脚手架", aliases: ["ts", "typescript"], create: (c) => `degit see7788/ts-template "${c.name}"` },
-    { title: "Hono脚手架", aliases: ["hono"], create: (c) => `pnpm create hono "${c.name}"` },
-    {
-      title: "degit克隆",
-      aliases: ["degit", "github"],
-      create: async () => {
-        const repo = await this.askRepo();
-        return `degit ${repo} "${repo.split("/")[1]}"`;
-      }
+class NodePkgCreate extends GitBase {
+  private sourceCreateMap: Record<string, (c: CreateTarget) => string | Promise<string>> = {
+    Vite脚手架: (c) => `pnpm create vite "${c.name}"`,
+    VSCode插件脚手架: (c) => `pnpm create vscode-extension "${c.name}"`,
+    Electron脚手架: (c) => `degit see7788/electron-template "${c.name}"`,
+    TS脚手架: (c) => `degit see7788/ts-template "${c.name}"`,
+    Hono脚手架: (c) => `pnpm create hono "${c.name}"`,
+    degit克隆: async () => {
+      const repo = await this.askRepo();
+      return `degit ${repo} "${repo.split("/")[1]}"`;
     },
-    {
-      title: "Custom命令",
-      aliases: ["command", "custom"],
-      create: async (c) => {
-        const cmd = await this.askCmd();
-        return cmd.replaceAll("{name}", c.name).replaceAll("{path}", c.path);
-      }
-    }
-  ];
+    Custom命令: async (c) => {
+      const cmd = await this.askCmd();
+      return cmd.replaceAll("{name}", c.name).replaceAll("{path}", c.path);
+    },
+  };
 
   async task1(initial?: string, initialSource?: string) {
     const target = await this.askTarget(initial);
-    const source = initialSource
-      ? this.sourceChoiceFromInput(initialSource)
+    const sourceCreate = initialSource
+      ? this.sourceCreateFromInput(initialSource)
       : await this.askSource();
 
     try {
-      const cmd = await source.create(target);
+      const cmd = await sourceCreate(target);
       this.runInteractiveCommand(cmd);
       await this.finalizeProjectOutput(target.path, target.name);
       this.done(target);
@@ -59,7 +45,6 @@ class CreatePkg extends LibBase {
       initialName: initial,
       defaultName: "my-app",
       message: "name",
-      targetLabel: "create",
       existsError: true
     });
 
@@ -69,50 +54,40 @@ class CreatePkg extends LibBase {
     };
   }
 
-  async askSource(): Promise<SourceChoice> {
+  async askSource(): Promise<(c: CreateTarget) => string | Promise<string>> {
     const r = await prompts({
       type: "select",
       name: "v",
       message: "source",
-      choices: this.sourceChoices.map((i, k) => ({
-        title: i.title,
-        value: k
+      choices: Object.keys(this.sourceCreateMap).map(sourceName => ({
+        title: sourceName,
+        value: sourceName
       }))
     });
 
     if (r.v === undefined) throw new Error("cancel");
-    return this.sourceChoices[r.v];
+    return this.sourceCreateMap[String(r.v)];
   }
 
-  private sourceChoiceFromInput(input: string): SourceChoice {
+  private sourceCreateFromInput(input: string): (c: CreateTarget) => string | Promise<string> {
     const source = input.trim();
     if (!source) throw new Error("source is empty");
 
     if (source.startsWith("command:")) {
       const command = source.slice("command:".length).trim();
       if (!command) throw new Error("command source is empty");
-      return {
-        title: "Custom命令",
-        create: (c) => command.replaceAll("{name}", c.name).replaceAll("{path}", c.path),
-      };
+      return (c) => command.replaceAll("{name}", c.name).replaceAll("{path}", c.path);
     }
 
     if (source.startsWith("vite:")) {
       const template = source.slice("vite:".length).trim();
       if (!template) throw new Error("vite template is empty");
-      return {
-        title: `Vite脚手架:${template}`,
-        create: (c) => `pnpm create vite "${c.name}" -- --template ${template}`,
-      };
+      return (c) => `pnpm create vite "${c.name}" -- --template ${template}`;
     }
 
-    const normalizedSource = source.toLowerCase();
-    const found = this.sourceChoices.find(choice => (
-      choice.title.toLowerCase() === normalizedSource
-      || choice.aliases?.some(alias => alias.toLowerCase() === normalizedSource)
-    ));
-    if (!found) throw new Error(`unknown source: ${source}`);
-    return found;
+    const sourceCreate = this.sourceCreateMap[source];
+    if (!sourceCreate) throw new Error(`unknown source: ${source}`);
+    return sourceCreate;
   }
 
   async askRepo() {
@@ -125,7 +100,7 @@ class CreatePkg extends LibBase {
     if (!r.v) throw new Error("cancel");
 
     const v = String(r.v).trim();
-    const m = this.parseGitHubRepo(v);
+    const m = this.githubRemoteParse(v);
     if (!m) throw new Error("bad repo");
 
     return `${m.owner}/${m.repo}`;
@@ -160,7 +135,7 @@ class CreatePkg extends LibBase {
 }
 
 if (path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1])) {
-  new CreatePkg().task1();
+  new NodePkgCreate().task1();
 }
 
-export default CreatePkg;
+export default NodePkgCreate;

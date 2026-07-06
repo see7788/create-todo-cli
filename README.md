@@ -9,150 +9,60 @@
 ```bash
 pnpm dlx github:see7788/create-todo-cli
 pnpm dlx github:see7788/create-todo-cli help
-pnpm dlx github:see7788/create-todo-cli createPkg my-app vite:react-ts
-pnpm dlx github:see7788/create-todo-cli createPkg my-hono "command:pnpm create hono {name}"
-pnpm dlx github:see7788/create-todo-cli distPkgBundle
-pnpm dlx github:see7788/create-todo-cli distPkgSource
-pnpm dlx github:see7788/create-todo-cli initPkgBin
-pnpm dlx github:see7788/create-todo-cli initGithubPkg
+pnpm dlx github:see7788/create-todo-cli nodePkgCreate my-vite-app vite:react-ts
+pnpm dlx github:see7788/create-todo-cli nodePkgDist my-package
+pnpm dlx github:see7788/create-todo-cli nodePackageBinInit my-command
+pnpm dlx github:see7788/create-todo-cli nodePackageIdentityInit
+pnpm dlx github:see7788/create-todo-cli pnpmInsert
+pnpm dlx github:see7788/create-todo-cli pnpmWorkspaceInit
+pnpm dlx github:see7788/create-todo-cli gitPush
+pnpm dlx github:see7788/create-todo-cli gitAutoPush
+pnpm dlx github:see7788/create-todo-cli gitignoreInit
+pnpm dlx github:see7788/create-todo-cli githubPublishYmlInit
 ```
 
+
 ## 源码说明
-交互式 TypeScript 项目脚手架工具，主要能力包括：创建项目、抽取 npm 包、初始化 package 配置、初始化 GitHub 仓库，以及同步 pnpm workspace release 仓库。
 
-它的入口位于 src/index.ts，实际执行时会根据命令名注册到 CLI 命令表，并由 scripts 目录下的脚本完成具体逻辑，例如创建项目、打包发布、初始化 bin、初始化 GitHub 配置等。
+交互式 TypeScript 项目脚手架工具，主要能力包括：创建项目、抽取 npm 包、初始化 package 配置、初始化 GitHub 仓库，以及显式补齐 pnpm workspace 中的外部兄弟目录包。
 
-## 项目结构
+入口位于 `src/index.ts`。命令名采用“环境/对象在前，动作在后”的风格。外部只需要看各能力目录 `index.ts` 公开的 `menu / command`。
+
+## 树
+
 ```txt
 create-todo-cli/
 ├─ src/
 │  ├─ index.ts
 │  │  ├─ CLI 入口
-│  │  ├─ pkg.version 输出
 │  │  ├─ help / --help / -h
-│  │  ├─ 命令注册表 commands
-│  │  │  ├─ createPkg <?name> <?source>
-│  │  │  │  ├─ 创建项目，默认目录 ./my-app
-│  │  │  │  ├─ source 为空时从交互菜单选择
-│  │  │  │  ├─ source 支持 vite、vite:<template>、command:/cmd:、github:、owner/repo
-│  │  │  │  ├─ 创建方式只有两种：执行 command 或用 degit 拉 GitHub 模板
-│  │  │  │  └─ 创建成功后执行项目身份、GitHub、pnpm workspace、publish 收尾
-│  │  │  ├─ distPkg <?name>
-│  │  │  │  ├─ 抽取 npm 包
-│  │  │  │  ├─ 交互选择 bundle/source
-│  │  │  │  └─ 命令行可用，交互菜单隐藏
-│  │  │  ├─ distPkgBundle <?name>
-│  │  │  │  └─ 抽取 npm 包：构建 ESM / CJS / d.ts
-│  │  │  ├─ distPkgSource <?name>
-│  │  │  │  └─ 抽取 npm 包：复制源码，不转 JS
-│  │  │  ├─ initGithubPkg
-│  │  │  │  ├─ 初始化 GitHub 仓库并 push
-│  │  │  │  ├─ 向上递归查找 .git，有 .git 时定位到该 Git 根目录
-│  │  │  │  ├─ 向上没有 .git 时定位到当前目录
-│  │  │  │  ├─ GitHub 仓库名使用定位目录名
-│  │  │  │  ├─ 判断定位目录是否存在 ../ 外部 pnpm workspace
-│  │  │  │  ├─ 普通平台项目提交
-│  │  │  │  │  ├─ git push
-│  │  │  │  │  ├─ git push for 兄弟目录
-│  │  │  │  │  ├─ 没有 .git 时初始化 master 分支
-│  │  │  │  │  ├─ GitHub 同名仓库存在时直接绑定 master
-│  │  │  │  │  ├─ GitHub 同名仓库不存在时选择 public / private 后创建
-│  │  │  │  │  ├─ 确保初始提交
-│  │  │  │  │  ├─ push HEAD 到远程仓库
-│  │  │  │  │  ├─ 兄弟目录分支显示 [当前/总数] 进度
-│  │  │  │  │  └─ 单个兄弟目录失败后记录并继续后续目录
-│  │  │  │  └─ pnpm workspace release 提交
-│  │  │  │     ├─ 使用定位目录名提交并推送源仓库
-│  │  │  │     ├─ 创建或复用 <目录名>_release GitHub 仓库
-│  │  │  │     ├─ clone 或复用本地 ../<项目名>_release
-│  │  │  │     ├─ 复制当前 workspace 文件
-│  │  │  │     ├─ 复制 ../ 外部 workspace 包到 extends/*
-│  │  │  │     ├─ 重写 release pnpm-workspace.yaml
-│  │  │  │     ├─ 刷新 lockfile
-│  │  │  │     └─ 提交并推送 release 仓库
-│  │  │  ├─ initPublishYml
-│  │  │  │  └─ 初始化 publish.yml / package.json 发布配置
-│  │  │  ├─ initPkgBin
-│  │  │  │  └─ 选择或输入 TS/JS 入口后初始化 package.json bin
-│  │  │  ├─ initPnpmWorkspace
-│  │  │  │  └─ 初始化 pnpm workspace
-│  │  │  ├─ initPackageIdentity
-│  │  │  │  └─ 重写 package.json 身份信息
-│  │  │  ├─ initGitignore
-│  │  │  │  └─ 初始化 .gitignore
-│  │  ├─ 菜单分组
-│  │  │  ├─ 命令名以 init 开头的命令进入 other 分组
-│  │  │  └─ 无参数或未知命令时打开交互菜单
-│  └─ scripts/
-│     ├─ createPkg.ts
-│     │  ├─ targetResolve：确定输出路径
-│     │  ├─ sourceResolve：命令行 source 或交互 choices
-│     │  ├─ sourceFromInput：解析 vite / vite:<template> / command / cmd / github / URL
-│     │  ├─ 执行方式：command 或 degit 模板拉取
-│     │  ├─ finalizeProjectOutput：项目身份、GitHub、pnpm workspace、publish 配置收尾
-│     │  └─ 创建失败时清理半成品目录
-│     ├─ createNodeBin.ts
-│     │  ├─ 复用 public.ts askLocalFilePath 选择或输入 TS/JS 入口文件
-│     │  ├─ 入口文件必须位于当前 package root 内
-│     │  ├─ 生成 bin/<command>.js 或 bin/<command>.mjs wrapper
-│     │  ├─ 完成后输出 entry / wrapper / command / changed files / linked files
-│     │  ├─ wrapper 支持 dev / start / stop / restart
-│     │  ├─ 更新 package.json bin
-│     │  ├─ 更新 package.json files
-│     │  ├─ 添加 tsx 运行依赖
-│     │  └─ 执行 pnpm link
-│     ├─ distPkg.ts
-│     │  ├─ bundle 分支
-│     │  │  ├─ 选择入口文件
-│     │  │  ├─ 调用 tsup 生成 ESM / CJS / d.ts
-│     │  │  ├─ 生成 npm package.json
-│     │  │  └─ 完成后输出产物路径、入口文件、package.json
-│     │  ├─ source 分支
-│     │  │  ├─ 从本地项目抽取源码
-│     │  │  ├─ 复制源码和必要配置
-│     │  │  ├─ 不转 JS
-│     │  │  └─ 完成后输出产物路径、来源项目、入口文件、package.json
-│     │  ├─ 默认产物路径：../<项目名>_dist
-│     │  ├─ 目标存在时提示将替换
-│     │  └─ 产物完成后执行公共收尾
-│     ├─ gitPush.ts
-│     │  ├─ initGithubPkg 命令入口
-│     │  ├─ 向上递归查找 .git 并定位项目根
-│     │  ├─ 判断定位目录是否存在 ../ 外部 pnpm workspace
-│     │  ├─ 提交和 push 前输出 GitHub 源路径
-│     │  ├─ 普通项目：git 初始化、GitHub 仓库创建或绑定、提交、push
-│     │  ├─ 普通项目：git push / git push for 兄弟目录 分支
-│     │  └─ release：复制 workspace 和外部包后提交到 <目录名>_release
-│     ├─ publishYml.ts
-│     │  ├─ 多选 npmjs / GitHub Packages / GitHub prelease / 手动 npmjs 发布任务
-│     │  ├─ npmjs：更新 package.json publishConfig 并写入 publish.yml job
-│     │  ├─ GitHub Packages：按 scope 生成 .npmrc 并写入 publish.yml job
-│     │  ├─ GitHub prelease：仅在存在 ../ 外部 workspace 包时可选
-│     │  └─ 手动 npmjs：写入 package.json scripts.publish:npm
-│     └─ public.ts
-│        ├─ cwd package/workspace 信息读取
-│        ├─ package.json 读写
-│        ├─ package name 归一化
-│        ├─ package.json 身份信息重写
-│        ├─ README 身份信息替换
-│        ├─ .gitignore 初始化
-│        ├─ pnpm workspace 初始化
-│        ├─ git init -b master / origin 设置
-│        ├─ GitHub 同名仓库创建或绑定
-│        └─ 通用命令、路径、文本工具
-├─ bin/
-│  └─ create-todo-cli.js
-├─ codetpl/
-│  ├─ .gitignore
-│  ├─ .npmrc
-│  ├─ command.js
-│  ├─ pnpm-workspace.yaml
-│  ├─ publish.yml
-│  ├─ publish-job-npmjs.yml
-│  ├─ publish-job-github-packages.yml
-│  └─ publish-job-github-prelease.yml
+│  │  └─ 无参数或未知命令时展示以下命令树
+│  ├─ nodeScript/
+│  │  └─ index.ts -> nodeScript
+│  │     ├─ nodeScript/nodePkgCreate  create project <?name> <?source>；先提示项目产物目录，再选择来源
+│  │     ├─ nodeScript/nodePkgDist  dist npm package <?name>；先提示 npm 包产物目录，再选择抽取方式和入口文件
+│  │     ├─ nodeScript/nodePackageBinInit  init package.json bin TS/JS entry <?commandName>；先提示 wrapper 产物路径，再选择入口文件
+│  │     └─ nodeScript/nodePackageIdentityInit  init package.json identity
+│  ├─ pnpmScript/
+│  │  └─ index.ts -> pnpmScript
+│  │     ├─ pnpmScript/pnpmInsert  clone missing ../ pnpm workspace packages
+│  │     └─ pnpmScript/pnpmWorkspaceInit  init pnpm workspace
+│  ├─ gitScript/
+│  │  └─ index.ts -> gitScript
+│  │     ├─ gitScript/gitPush  init GitHub repo and push
+│  │     ├─ gitScript/gitAutoPush  auto GitHub repo push
+│  │     └─ gitScript/gitignoreInit  init .gitignore
+│  ├─ githubScript/
+│  │  └─ index.ts -> githubScript
+│  │     └─ githubScript/githubPublishYmlInit  init publish.yml set
+│  └─ public/
+│     ├─ base.ts -> LibBase / Appexit / path / json / shell / prompt
+│     ├─ fileTpl.ts -> 模板读取
+│     ├─ pnpm.ts -> pnpm workspace / .npmrc
+│     └─ git.ts -> git / GitHub / .gitignore / 项目身份
 ├─ scripts/
 │  └─ create-todo-cli.js
+│     └─ package bin 运行产物，不作为源码入口维护
 ├─ package.json
 └─ README.md
 ```

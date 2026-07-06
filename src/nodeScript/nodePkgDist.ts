@@ -2,7 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, 
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSync } from "esbuild";
-import LibBase, { Appexit } from "./public.js";
+import GitBase, { Appexit } from "../public/git";
 
 type DistNpmPkgOptions = {
   dist: string;
@@ -23,7 +23,7 @@ type DistNpmPkgResult = {
   js: Record<string, string>;
 };
 
-type DistPkgMode = "bundle" | "source";
+type NodePkgDistMode = "bundle" | "source";
 
 type SourcePkgResult = {
   dist: string;
@@ -45,37 +45,60 @@ type DistTarget = {
   path: string;
 };
 
-class DistPkg extends LibBase {
+class NodePkgDist extends GitBase {
   private target!: DistTarget;
   private entryIndex = "";
 
-  public async task1(initialPackageName?: string, initialMode?: DistPkgMode): Promise<void> {
+  public async task1(initialPackageName?: string, initialMode?: NodePkgDistMode): Promise<void> {
+    this.target = await this.targetAsk(initialPackageName);
+    console.log(`npm 包产物目录: ${this.pathDisplay(this.target.path)}`);
+    const mode = initialMode ?? await this.modeAsk();
+    if (mode === "source") {
+      await this.sourceDistRun();
+      return;
+    }
+
+    await this.bundleDistRun();
+  }
+
+  private async targetAsk(initialPackageName?: string): Promise<DistTarget> {
     const targetName = await this.confirmOutputName({
       basePath: dirname(this.cwdProjectInfo.pkgPath),
       initialName: initialPackageName,
       defaultName: `${basename(this.cwdProjectInfo.pkgPath)}_dist`,
-      message: "请输入 npm 包输出目录名",
-      targetLabel: "将创建 npm 包产物到",
+      message: "请输入 npm 包产物目录名",
     });
-    this.target = {
+    return {
       name: targetName,
       path: resolve(dirname(this.cwdProjectInfo.pkgPath), targetName),
-    };    const mode = initialMode ?? await this.modeAsk();
-    if (mode === "source") {
-      this.entryIndex = await this.askLocalFilePath([".js", ".jsx", ".ts", ".tsx", ".cjs", ".mjs", ".json"], this.cwdProjectInfo.cwdPath);
-      const result = this.copySourceProject(
-        this.target.path,
-        this.entryIndex,
-      );
-      console.log(`\n完成源码 npm 包抽取: ${this.pathDisplay(result.dist)}`);
-      console.log(`来源项目: ${result.source}`);
-      console.log(`入口文件: ${result.entry}`);
-      console.log(`package.json: ${result.packageJson}`);
-      await this.finalizeProjectOutput(result.dist, this.toPackageName(basename(result.dist)));
-      return;
-    }
+    };
+  }
 
-    this.entryIndex = await this.askLocalFilePath([".js", ".jsx", ".ts", ".tsx", ".cjs", ".mjs"], this.cwdProjectInfo.cwdPath);
+  private async sourceDistRun(): Promise<void> {
+    this.entryIndex = await this.askLocalFilePath(
+      [".js", ".jsx", ".ts", ".tsx", ".cjs", ".mjs", ".json"],
+      this.cwdProjectInfo.cwdPath,
+      true,
+      this.cwdProjectInfo.pkgPath,
+    );
+    const result = this.copySourceProject(
+      this.target.path,
+      this.entryIndex,
+    );
+    console.log(`\n完成源码 npm 包抽取: ${this.pathDisplay(result.dist)}`);
+    console.log(`来源项目: ${result.source}`);
+    console.log(`入口文件: ${result.entry}`);
+    console.log(`package.json: ${result.packageJson}`);
+    await this.finalizeProjectOutput(result.dist, this.toPackageName(basename(result.dist)));
+  }
+
+  private async bundleDistRun(): Promise<void> {
+    this.entryIndex = await this.askLocalFilePath(
+      [".js", ".jsx", ".ts", ".tsx", ".cjs", ".mjs"],
+      this.cwdProjectInfo.cwdPath,
+      true,
+      this.cwdProjectInfo.pkgPath,
+    );
     const result = await this.build({
       dist: this.target.path,
       entryIndex: this.entryIndex,
@@ -86,14 +109,6 @@ class DistPkg extends LibBase {
     console.log(`入口文件: ${this.entryIndex}`);
     console.log(`package.json: ${result.packageJson}`);
     await this.finalizeProjectOutput(result.dist, this.toPackageName(basename(result.dist)));
-  }
-
-  public async taskBundle(initialPackageName?: string): Promise<void> {
-    await this.task1(initialPackageName, "bundle");
-  }
-
-  public async taskSource(initialPackageName?: string): Promise<void> {
-    await this.task1(initialPackageName, "source");
   }
 
   private async build({ dist, entryIndex, entryMore = {} }: DistNpmPkgOptions): Promise<DistNpmPkgResult> {
@@ -120,7 +135,7 @@ class DistPkg extends LibBase {
 
     rmSync(outDir, { force: true, recursive: true });
     mkdirSync(outDir, { recursive: true });
-    const tsconfig = join(outDir, "tsconfig.distPkg.json");
+    const tsconfig = join(outDir, "tsconfig.nodePkgDist.json");
     writeFileSync(
       tsconfig,
       `${JSON.stringify(
@@ -252,7 +267,7 @@ class DistPkg extends LibBase {
     );
   }
 
-  private async modeAsk(): Promise<DistPkgMode> {
+  private async modeAsk(): Promise<NodePkgDistMode> {
     const prompts = await import("prompts");
     const response = await prompts.default({
       type: "select",
@@ -642,7 +657,7 @@ class DistPkg extends LibBase {
 }
 
 if (resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1])) {
-  new DistPkg().task1();
+  new NodePkgDist().task1();
 }
 
-export default DistPkg;
+export default NodePkgDist;

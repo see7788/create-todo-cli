@@ -1,7 +1,9 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { BinTpl } from "./public.js";
+import { fileURLToPath } from "node:url";
+import Mustache from "mustache";
+import LibBase from "../public/base";
 
 type NodeBinPackageJson = {
   name?: string;
@@ -18,7 +20,9 @@ type NodeBinTarget = {
   entryPath: string;
 };
 
-class CreateNodeBin extends BinTpl {
+const scriptPath = dirname(fileURLToPath(import.meta.url));
+
+class NodePackageBinInit extends LibBase {
   public async task1(initialCommandName?: string): Promise<void> {
     const packageJsonPath = this.packagePath("package.json");
     const pkg = this.readRequiredJsonFile<NodeBinPackageJson>(packageJsonPath);
@@ -27,7 +31,7 @@ class CreateNodeBin extends BinTpl {
 
     this.packageJsonSet(packageJsonPath, pkg, target);
     this.nodeBinWrapperWrite(target);
-    const linkedFiles = this.pnpmLinkRun(pkg);
+    const linkedFiles = await this.pnpmLinkRun(pkg);
 
     console.log("init package bin complete");
     console.log(`source entry: ${target.entryPath}`);
@@ -43,14 +47,19 @@ class CreateNodeBin extends BinTpl {
   }
 
   private async nodeBinTargetAsk(pkg: NodeBinPackageJson, initialCommandName?: string): Promise<NodeBinTarget> {
+    const commandName = await this.commandNameAsk(pkg, initialCommandName);
+    const wrapperPath = this.wrapperPathDefault(commandName, pkg);
+    await this.targetPathsConfirm([
+      this.packagePath("package.json"),
+      this.packagePath(wrapperPath),
+    ]);
+
     const entryPath = await this.entryPathAsk();
     const entryRelativePath = this.packageRelativePath(entryPath);
     if (entryRelativePath.startsWith("..") || isAbsolute(entryRelativePath)) {
       throw new Error("bin 入口文件必须位于当前项目内");
     }
 
-    const commandName = await this.commandNameAsk(pkg, initialCommandName);
-    const wrapperPath = this.wrapperPathDefault(commandName, pkg);
     const target = {
       commandName,
       wrapperPath,
@@ -63,7 +72,17 @@ class CreateNodeBin extends BinTpl {
     if (initialCommandName) {
       return this.commandNameNormalize(initialCommandName);
     }
-    return this.commandNameDefault(pkg);
+    const prompts = await import("prompts");
+    const response = await prompts.default({
+      type: "text",
+      name: "commandName",
+      message: "请输入 bin 命令名",
+      initial: this.commandNameDefault(pkg),
+    });
+    if (!response.commandName) {
+      throw new Error("user-cancelled");
+    }
+    return this.commandNameNormalize(String(response.commandName));
   }
 
   private commandNameNormalize(commandName: string): string {
@@ -78,6 +97,8 @@ class CreateNodeBin extends BinTpl {
     return this.askLocalFilePath(
       [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"],
       this.entryPathDefault(),
+      true,
+      this.cwdProjectInfo.pkgPath,
     );
   }
 
@@ -144,10 +165,11 @@ class CreateNodeBin extends BinTpl {
     rootRelativePath: string;
     entryRelativePath: string;
   }): string {
-    this.binCommandName = context.commandName;
-    this.binRootRelativePath = context.rootRelativePath;
-    this.binEntryRelativePath = context.entryRelativePath;
-    return this.bin_command_js_create();
+    return Mustache.render(readFileSync(join(scriptPath, "command.js"), "utf-8"), {
+      commandNameJson: JSON.stringify(context.commandName),
+      entryRelativePathJson: JSON.stringify(context.entryRelativePath),
+      rootRelativePathJson: JSON.stringify(context.rootRelativePath),
+    });
   }
 
   private packageJsonSet(packageJsonPath: string, pkg: NodeBinPackageJson, target: NodeBinTarget): void {
@@ -170,7 +192,7 @@ class CreateNodeBin extends BinTpl {
     this.writeJsonFile(packageJsonPath, pkg);
   }
 
-  private pnpmLinkRun(pkg: NodeBinPackageJson): string[] {
+  private async pnpmLinkRun(pkg: NodeBinPackageJson): Promise<string[]> {
     const cwd = process.cwd();
     try {
       process.chdir(this.cwdProjectInfo.pkgPath);
@@ -182,7 +204,7 @@ class CreateNodeBin extends BinTpl {
     return this.globalBinLinksWrite(pkg);
   }
 
-  private globalBinLinksWrite(pkg: NodeBinPackageJson): string[] {
+  private async globalBinLinksWrite(pkg: NodeBinPackageJson): Promise<string[]> {
     const binEntries = this.binEntries(pkg);
     if (binEntries.length === 0) {
       throw new Error("package.json bin is empty");
@@ -199,13 +221,23 @@ class CreateNodeBin extends BinTpl {
 
     mkdirSync(globalBin, { recursive: true });
     const commandNames = new Set(binEntries.map(([commandName]) => commandName));
-    const removedFiles = this.globalBinStaleLinksRemove(globalBin, commandNames);
+    const removedFiles = this.globalBinStaleLinksFind(globalBin, commandNames);
+    const linkTargets = binEntries.flatMap(([commandName]) => {
+      const commandPath = resolve(globalBin, commandName);
+      return process.platform === "win32"
+        ? [commandPath, `${commandPath}.cmd`, `${commandPath}.ps1`]
+        : [commandPath];
+    });
+    await this.targetPathsConfirm([...removedFiles, ...linkTargets]);
+    for (const filePath of removedFiles) {
+      rmSync(filePath, { force: true });
+    }
+
     const linkedFiles: string[] = [];
     for (const [commandName, binPath] of binEntries) {
       const wrapperPath = resolve(this.cwdProjectInfo.pkgPath, binPath);
       const commandPath = resolve(globalBin, commandName);
-      this.commandWrapperPath = wrapperPath;
-      writeFileSync(commandPath, this.command_shell_create(), "utf-8");
+      writeFileSync(commandPath, this.commandShellCreate(wrapperPath), "utf-8");
       linkedFiles.push(commandPath);
       try {
         chmodSync(commandPath, 0o755);
@@ -214,8 +246,8 @@ class CreateNodeBin extends BinTpl {
       }
 
       if (process.platform === "win32") {
-        writeFileSync(`${commandPath}.cmd`, this.command_cmd_create().replace(/\n/g, "\r\n"), "utf-8");
-        writeFileSync(`${commandPath}.ps1`, this.command_ps1_create().replace(/\n/g, "\r\n"), "utf-8");
+        writeFileSync(`${commandPath}.cmd`, this.commandCmdCreate(wrapperPath).replace(/\n/g, "\r\n"), "utf-8");
+        writeFileSync(`${commandPath}.ps1`, this.commandPs1Create(wrapperPath).replace(/\n/g, "\r\n"), "utf-8");
         linkedFiles.push(`${commandPath}.cmd`, `${commandPath}.ps1`);
       }
 
@@ -224,9 +256,9 @@ class CreateNodeBin extends BinTpl {
     return [...removedFiles.map(filePath => `removed ${filePath}`), ...linkedFiles];
   }
 
-  private globalBinStaleLinksRemove(globalBin: string, commandNames: Set<string>): string[] {
-    const packagePath = this.pathNormalize(this.cwdProjectInfo.pkgPath);
-    const removedFiles: string[] = [];
+  private globalBinStaleLinksFind(globalBin: string, commandNames: Set<string>): string[] {
+    const packagePath = LibBase.pathNormalize(this.cwdProjectInfo.pkgPath);
+    const staleFiles: string[] = [];
     const knownExtensions = ["", ".cmd", ".ps1"];
     for (const filePath of this.globalBinFiles(globalBin)) {
       const commandName = this.globalBinCommandName(filePath);
@@ -240,12 +272,11 @@ class CreateNodeBin extends BinTpl {
       for (const extension of knownExtensions) {
         const linkedFile = resolve(globalBin, `${commandName}${extension}`);
         if (existsSync(linkedFile)) {
-          rmSync(linkedFile, { force: true });
-          removedFiles.push(linkedFile);
+          staleFiles.push(linkedFile);
         }
       }
     }
-    return removedFiles;
+    return staleFiles;
   }
 
   private globalBinFiles(globalBin: string): string[] {
@@ -261,14 +292,10 @@ class CreateNodeBin extends BinTpl {
 
   private globalBinFileBelongsToPackage(filePath: string, packagePath: string): boolean {
     try {
-      return this.pathNormalize(readFileSync(filePath, "utf-8")).includes(packagePath);
+      return LibBase.pathNormalize(readFileSync(filePath, "utf-8")).includes(packagePath);
     } catch {
       return false;
     }
-  }
-
-  private pathNormalize(filePath: string): string {
-    return filePath.replace(/\\/g, "/").toLowerCase();
   }
 
   private binEntries(pkg: NodeBinPackageJson): [string, string][] {
@@ -299,6 +326,24 @@ class CreateNodeBin extends BinTpl {
     const relativePath = relative(fromDir, toFile).replace(/\\/g, "/");
     return relativePath.startsWith(".") ? relativePath : `./${relativePath}`;
   }
+
+  private commandShellCreate(wrapperPath: string): string {
+    return Mustache.render(`#!/usr/bin/env sh
+exec node {{{wrapperPathJson}}} $@
+`, { wrapperPathJson: JSON.stringify(wrapperPath) });
+  }
+
+  private commandCmdCreate(wrapperPath: string): string {
+    return Mustache.render(`@ECHO off
+node {{{wrapperPathJson}}} %*
+`, { wrapperPathJson: JSON.stringify(wrapperPath) });
+  }
+
+  private commandPs1Create(wrapperPath: string): string {
+    return Mustache.render(`& node {{{wrapperPathJson}}} @args
+exit $LASTEXITCODE
+`, { wrapperPathJson: JSON.stringify(wrapperPath) });
+  }
 }
 
-export default CreateNodeBin;
+export default NodePackageBinInit;

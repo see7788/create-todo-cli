@@ -1,130 +1,85 @@
 #!/usr/bin/env node
 import prompts from "prompts";
-import CreatePkg from "./scripts/createPkg.js";
-import CreateNodeBin from "./scripts/createNodeBin.js";
-import DistPkg from "./scripts/distPkg.js";
-import GitPush from "./scripts/gitPush.js";
-import PublishYml from "./scripts/publishYml.js";
-import LibBase, { Appexit } from "./scripts/public.js";
+import gitScript from "./gitScript/index";
+import githubScript from "./githubScript/index";
+import nodeScript from "./nodeScript/index";
+import pnpmScript from "./pnpmScript/index";
+import { Appexit } from "./public/base";
 import pkg from "../package.json" with { type: "json" };
-
-type CommandContext = {
-  param?: string;
-  source?: string;
-};
-
-type CommandConfig = {
-  title: string;
-  hidden?: () => boolean;
-  menu?: boolean;
-  run: (context: CommandContext) => Promise<void> | void;
-};
-
-const commands = {
-  createPkg: {
-    title: "create project",
-    run: ({ param, source }) => new CreatePkg().task1(param, source),
-  },
-  distPkg: {
-    title: "dist npm package",
-    menu: false,
-    run: ({ param }) => new DistPkg().task1(param),
-  },
-  distPkgBundle: {
-    title: "dist npm package: bundle ESM/CJS/d.ts",
-    run: ({ param }) => new DistPkg().taskBundle(param),
-  },
-  distPkgSource: {
-    title: "dist npm package: copy source",
-    run: ({ param }) => new DistPkg().taskSource(param),
-  },
-  initPublishYml: {
-    title: "init publish.yml set",
-    run: async () => {
-      await new PublishYml().createCurrent();
-    },
-  },
-  initPkgBin: {
-    title: "init package.json bin TS/JS entry",
-    run: ({ param }) => new CreateNodeBin().task1(param),
-  },
-  initPnpmWorkspace: {
-    title: "init pnpm workspace",
-    run: () => new LibBase().setupPnpmWorkspaceRoot(),
-  },
-  initGithubPkg: {
-    title: "init GitHub repo and push",
-    run: () => new GitPush().task1(),
-  },
-  initPackageIdentity: {
-    title: "init package.json identity",
-    run: () => new LibBase().rewriteCurrentPackageIdentity(),
-  },
-  initGitignore: {
-    title: "init .gitignore",
-    run: () => new LibBase().initCurrentGitignore(),
-  },
-} as const satisfies Record<string, CommandConfig>;
-
-type CommandName = keyof typeof commands;
-
-const isCommandName = (value: string | undefined): value is CommandName => (
-  Boolean(value && value in commands)
-);
-
-const commandEntries = () => Object.entries(commands) as [CommandName, CommandConfig][];
-
-const menuCommandEntries = () => commandEntries()
-  .filter(([, command]) => command.menu !== false)
-  .filter(([, command]) => !command.hidden?.());
-
-const primaryCommandEntries = () => menuCommandEntries()
-  .filter(([name]) => !name.startsWith("init"));
-
-const initCommandEntries = () => menuCommandEntries()
-  .filter(([name]) => name.startsWith("init"));
-
-const toPromptChoices = (entries: [CommandName, CommandConfig][]) => entries
-  .map(([value, command]) => ({
-    title: `${value} - ${command.title}`,
-    value,
-  }));
 
 class CLI {
   private readonly args: string[];
+
+  private readonly scripts = {
+    node: nodeScript,
+    pnpm: pnpmScript,
+    git: gitScript,
+    github: githubScript,
+  } as const;
+
+  private readonly command = {
+    ...nodeScript.command,
+    ...pnpmScript.command,
+    ...gitScript.command,
+    ...githubScript.command,
+  } as const;
 
   constructor() {
     this.args = process.argv.slice(2);
     console.log("pkg.version:", pkg.version);
   }
 
-  private showHelp(): void {
-    const primaryHelp = primaryCommandEntries();
-    const initHelp = initCommandEntries();
+  private commandHelpEntries(): [string, string][] {
+    return Object.entries(this.command)
+      .map(([commandName, commandRun]) => [commandName, this.commandTitleGet(commandRun)]);
+  }
 
+  private interactiveChoices() {
+    return Object.values(this.scripts).flatMap(script => [
+      ...Object.entries(script.menu).map(([title, commandRun]) => ({
+        title,
+        value: commandRun,
+      })),
+    ]);
+  }
+
+  private commandTitleGet(targetCommand: unknown): string {
+    for (const script of Object.values(this.scripts)) {
+      for (const [title, commandRun] of Object.entries(script.menu)) {
+        if (commandRun === targetCommand) {
+          return title;
+        }
+      }
+    }
+    return "";
+  }
+
+  private showHelp(): void {
     console.log([
       "help - show help",
-      ...primaryHelp.map(([value, command]) => `${value} - ${command.title}`),
-      "other",
-      ...initHelp.map(([value, command]) => `${value} - ${command.title}`),
+      ...this.commandHelpEntries().map(([commandName, title]) => `${commandName} - ${title}`),
     ].join("\n"));
     process.exit(0);
   }
 
-  private async handleCommand(cmd?: string, param?: string, source?: string): Promise<void> {
-    switch (cmd) {
-      case "--help":
-      case "-h":
-      case "help":
-        this.showHelp();
-        return;
-      default:
-        if (isCommandName(cmd)) {
-          await commands[cmd].run({ param, source });
-          return;
-        }
-        await this.showInteractiveMenu();
+  private async handleCommand(commandName?: string, commandParam?: string, commandSource?: string): Promise<void> {
+    if (!commandName) {
+      await this.showInteractiveMenu();
+      return;
     }
+
+    if (commandName === "--help" || commandName === "-h" || commandName === "help") {
+      this.showHelp();
+      return;
+    }
+
+    if (commandName in this.command) {
+      const commandRun = this.command[commandName as keyof typeof this.command] as (context: { param?: string; source?: string }) => Promise<void> | void;
+      await commandRun({ param: commandParam, source: commandSource });
+      return;
+    }
+
+    await this.showInteractiveMenu();
   }
 
   private async showInteractiveMenu(): Promise<void> {
@@ -132,25 +87,21 @@ class CLI {
       type: "select",
       name: "action",
       message: "Select action",
-      choices: [
-        ...toPromptChoices(primaryCommandEntries()),
-        { title: "other", value: "__other__", disabled: true },
-        ...toPromptChoices(initCommandEntries()),
-      ],
+      choices: this.interactiveChoices(),
     });
 
-    if (!isCommandName(response.action)) {
+    if (typeof response.action !== "function") {
       console.log("cancelled");
       process.exit(0);
     }
 
-    await commands[response.action].run({});
+    await response.action({});
   }
 
   public async run(): Promise<void> {
     try {
-      const [cmd, param, source] = this.args;
-      await this.handleCommand(cmd, param, source);
+      const [commandName, commandParam, commandSource] = this.args;
+      await this.handleCommand(commandName, commandParam, commandSource);
     } catch (err: unknown) {
       if (err instanceof Appexit) {
         console.error(`program error: ${err.message}`);

@@ -1,8 +1,9 @@
-import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import Mustache from "mustache";
 import prompts from "prompts";
-import { PublishTpl } from "./public.js";
+import GitBase from "../public/git";
 
 type PackageJsonRecord = {
   name?: string;
@@ -13,34 +14,35 @@ type PackageJsonRecord = {
   scripts?: Record<string, string>;
 } & Record<string, unknown>;
 
-type GitRemote = {
-  owner: string;
-  repo: string;
-};
+type PublishTask = "npmjs" | "github-packages" | "manual-npmjs";
 
-type PublishTask = "npmjs" | "github-packages" | "github-prelease" | "manual-npmjs";
-
-type PublishYmlContext = {
+type GithubPublishYmlContext = {
   packageName: string;
   targetPath: string;
   workingDirectory?: string;
   githubOwner?: string;
 };
 
-type PublishYmlResult = {
+type GithubPublishYmlResult = {
   files: string[];
   tasks: PublishTask[];
 };
 
-class PublishYml extends PublishTpl {
-  public async createCurrent(startPath = process.cwd()): Promise<PublishYmlResult | undefined> {
+const scriptPath = path.dirname(fileURLToPath(import.meta.url));
+
+export class GithubPublishYmlInit extends GitBase {
+  constructor() {
+    super({ requirePackage: false });
+  }
+
+  public async createCurrent(startPath = process.cwd()): Promise<GithubPublishYmlResult | undefined> {
     const targetPath = this.packageRootFind(startPath);
     const pkg = this.readJsonFile<PackageJsonRecord>(path.join(targetPath, "package.json")) ?? {};
     const packageName = String(pkg.name ?? path.basename(targetPath));
     const result = await this.createForProject({
       packageName,
       targetPath,
-      githubOwner: this.githubRemoteGet(targetPath)?.owner ?? this.githubOwnerFromPackage(pkg),
+      githubOwner: this.githubRemoteOptional(targetPath)?.owner ?? this.githubOwnerFromPackage(pkg),
     });
 
     if (result) {
@@ -49,13 +51,14 @@ class PublishYml extends PublishTpl {
     return result;
   }
 
-  public async createForProject(context: PublishYmlContext): Promise<PublishYmlResult | undefined> {
-    const tasks = await this.tasksAsk(context);
+  public async createForProject(context: GithubPublishYmlContext): Promise<GithubPublishYmlResult | undefined> {
+    const tasks = await this.tasksAsk();
     if (tasks.length === 0) {
       console.log("跳过发布配置");
       return undefined;
     }
 
+    await this.targetPathsConfirm(this.taskTargetFiles(tasks, context));
     const files = new Set<string>();
     for (const task of tasks) {
       for (const filePath of this.taskSet(task, context)) {
@@ -66,14 +69,28 @@ class PublishYml extends PublishTpl {
     return { files: [...files], tasks };
   }
 
-  private taskSet(task: PublishTask, context: PublishYmlContext): string[] {
+  private taskTargetFiles(tasks: PublishTask[], context: GithubPublishYmlContext): string[] {
+    const files = new Set<string>();
+    for (const task of tasks) {
+      if (task === "npmjs" || task === "manual-npmjs" || task === "github-packages") {
+        files.add(path.join(context.targetPath, "package.json"));
+      }
+      if (task === "npmjs" || task === "github-packages") {
+        files.add(path.join(context.targetPath, ".github", "workflows", "publish.yml"));
+      }
+      if (task === "github-packages") {
+        files.add(path.join(context.targetPath, ".npmrc"));
+      }
+    }
+    return [...files];
+  }
+
+  private taskSet(task: PublishTask, context: GithubPublishYmlContext): string[] {
     switch (task) {
       case "npmjs":
         return this.npmjsSet(context);
       case "github-packages":
         return this.githubPackagesSet(context);
-      case "github-prelease":
-        return this.githubPreleaseSet(context);
       case "manual-npmjs":
         return this.manualNpmjsSet(context);
       default:
@@ -81,8 +98,7 @@ class PublishYml extends PublishTpl {
     }
   }
 
-  private async tasksAsk(context: PublishYmlContext): Promise<PublishTask[]> {
-    const hasExternalWorkspace = this.hasExternalWorkspace(context.targetPath);
+  private async tasksAsk(): Promise<PublishTask[]> {
     const response = await prompts({
       type: "multiselect",
       name: "tasks",
@@ -90,13 +106,6 @@ class PublishYml extends PublishTpl {
       choices: [
         { title: "publish.yml job: npmjs 发布", value: "npmjs" },
         { title: "publish.yml job: GitHub Packages 发布", value: "github-packages" },
-        {
-          title: hasExternalWorkspace
-            ? "publish.yml job: GitHub prelease"
-            : "publish.yml job: GitHub prelease（需要 pnpm-workspace.yaml 存在 ../ 外部包）",
-          value: "github-prelease",
-          disabled: !hasExternalWorkspace,
-        },
         { title: "package.json script: 手动 npmjs 发布", value: "manual-npmjs" },
       ],
       hint: "- Space 选择，Enter 确认",
@@ -109,7 +118,7 @@ class PublishYml extends PublishTpl {
     return response.tasks;
   }
 
-  private npmjsSet(context: PublishYmlContext): string[] {
+  private npmjsSet(context: GithubPublishYmlContext): string[] {
     const packageJsonPath = path.join(context.targetPath, "package.json");
     const pkg = this.readJsonFile<PackageJsonRecord>(packageJsonPath) ?? {};
     pkg.publishConfig = {
@@ -128,7 +137,7 @@ class PublishYml extends PublishTpl {
     return [packageJsonPath, workflowPath];
   }
 
-  private githubPackagesSet(context: PublishYmlContext): string[] {
+  private githubPackagesSet(context: GithubPublishYmlContext): string[] {
     const packageJsonPath = path.join(context.targetPath, "package.json");
     const pkg = this.readJsonFile<PackageJsonRecord>(packageJsonPath) ?? {};
     const scope = this.githubScopeGet(context, pkg);
@@ -154,17 +163,7 @@ class PublishYml extends PublishTpl {
     return files;
   }
 
-  private githubPreleaseSet(context: PublishYmlContext): string[] {
-    const workflowPath = this.workflowJobsSet(context, {
-      github_prelease: this.githubPreleaseJobContent({
-        pnpmVersion: this.pnpmVersionGet(context.targetPath),
-      }),
-    });
-    console.log("GitHub prelease 需要 Actions 具备创建/推送 release 仓库权限");
-    return [workflowPath];
-  }
-
-  private manualNpmjsSet(context: PublishYmlContext): string[] {
+  private manualNpmjsSet(context: GithubPublishYmlContext): string[] {
     const packageJsonPath = path.join(context.targetPath, "package.json");
     const pkg = this.readJsonFile<PackageJsonRecord>(packageJsonPath) ?? {};
     pkg.scripts = {
@@ -180,7 +179,7 @@ class PublishYml extends PublishTpl {
   }
 
   private workflowJobsSet(
-    context: PublishYmlContext,
+    context: GithubPublishYmlContext,
     jobs: Record<string, string>,
     removeAliases: string[] = [],
   ): string {
@@ -195,9 +194,8 @@ class PublishYml extends PublishTpl {
     return workflowPath;
   }
 
-  private workflowBaseContent(context: PublishYmlContext): string {
-    this.publishPackageName = context.packageName;
-    return this.publish_yml_create();
+  private workflowBaseContent(context: GithubPublishYmlContext): string {
+    return this.templateRender("publish.yml", { packageName: context.packageName });
   }
 
   private workflowJobsUpsert(content: string, jobs: Record<string, string>, removeAliases: string[]): string {
@@ -239,68 +237,50 @@ class PublishYml extends PublishTpl {
     workingDirectory?: string;
     pnpmVersion: string;
   }): string {
-    this.publishPnpmVersion = config.pnpmVersion;
-    this.publishWorkingDirectory = config.workingDirectory;
-    return this.publish_yml_job_npmjs_create();
+    return this.templateRender("publish-job-npmjs.yml", this.publishJobView(config));
   }
 
   private githubPackagesJobContent(config: {
     workingDirectory?: string;
     pnpmVersion: string;
   }): string {
-    this.publishPnpmVersion = config.pnpmVersion;
-    this.publishWorkingDirectory = config.workingDirectory;
-    return this.publish_yml_job_github_packages_create();
+    return this.templateRender("publish-job-github-packages.yml", this.publishJobView(config));
   }
 
-  private githubPreleaseJobContent(config: {
+  private publishJobView(config: {
+    workingDirectory?: string;
     pnpmVersion: string;
-  }): string {
-    this.publishPnpmVersion = config.pnpmVersion;
-    return this.publish_yml_job_github_prelease_create();
+  }): Record<string, string> {
+    return {
+      jobDefaultsContent: this.publishJobDefaultsContent(config.workingDirectory),
+      githubToken: "{{ secrets.GITHUB_TOKEN }}",
+      npmToken: "{{ secrets.NPM_TOKEN }}",
+      pnpmVersion: config.pnpmVersion,
+    };
   }
 
-  private githubScopeGet(context: PublishYmlContext, pkg: PackageJsonRecord): string {
+  private publishJobDefaultsContent(workingDirectory = "."): string {
+    if (!workingDirectory || workingDirectory === ".") {
+      return "";
+    }
+    return `
+    defaults:
+      run:
+        working-directory: ${workingDirectory.replace(/\\/g, "/")}`;
+  }
+
+  private templateRender(name: string, view: Record<string, unknown>): string {
+    return Mustache.render(fs.readFileSync(path.join(scriptPath, name), "utf-8"), view);
+  }
+
+  private githubScopeGet(context: GithubPublishYmlContext, pkg: PackageJsonRecord): string {
     const packageScope = String(pkg.name ?? context.packageName).match(/^@([^/]+)\//)?.[1];
-    const githubOwner = context.githubOwner ?? this.githubRemoteGet(context.targetPath)?.owner ?? this.githubOwnerFromPackage(pkg);
+    const githubOwner = context.githubOwner ?? this.githubRemoteOptional(context.targetPath)?.owner ?? this.githubOwnerFromPackage(pkg);
     const scope = packageScope ?? githubOwner;
     if (!scope) {
       throw new Error("无法从 package.json 或 git remote 推断 GitHub owner/scope");
     }
     return scope.replace(/^@/, "");
-  }
-
-  private githubOwnerFromPackage(pkg: PackageJsonRecord): string | undefined {
-    const repositoryUrl = typeof pkg.repository === "string" ? pkg.repository : pkg.repository?.url;
-    const value = repositoryUrl ?? pkg.homepage;
-    return value?.match(/github\.com[:/]([^/]+)\//i)?.[1];
-  }
-
-  private githubRemoteGet(targetPath: string): GitRemote | undefined {
-    try {
-      const value = execSync("git remote get-url origin", {
-        cwd: targetPath,
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "ignore"],
-      }).trim();
-      const match = value.match(/github\.com[:/]([^/]+)\/(.+?)(?:\.git)?$/i);
-      if (!match?.[1] || !match[2]) {
-        return undefined;
-      }
-      return { owner: match[1], repo: match[2] };
-    } catch {
-      return undefined;
-    }
-  }
-
-  private hasExternalWorkspace(targetPath: string): boolean {
-    const workspacePath = path.join(targetPath, "pnpm-workspace.yaml");
-    if (!fs.existsSync(workspacePath)) {
-      return false;
-    }
-    return fs.readFileSync(workspacePath, "utf-8")
-      .split(/\r?\n/)
-      .some(line => /^\s*-\s*["']?\.\.\//.test(line));
   }
 
   private pnpmVersionGet(targetPath: string): string {
@@ -339,4 +319,20 @@ class PublishYml extends PublishTpl {
   }
 }
 
-export default PublishYml;
+class GithubScript {
+  public readonly menu = {
+    "githubScript/githubPublishYmlInit  init publish.yml set": this.githubPublishYmlInit,
+  } as const;
+
+  public readonly command = {
+    githubPublishYmlInit: this.githubPublishYmlInit,
+  } as const;
+
+  private async githubPublishYmlInit(): Promise<void> {
+    await new GithubPublishYmlInit().createCurrent();
+  }
+}
+
+export const githubScript = new GithubScript();
+
+export default githubScript;
