@@ -15,7 +15,7 @@ const tsxResolve = () => {
     return localTsx;
   }
   try {
-    return require.resolve("tsx/dist/cli.mjs");
+    return require.resolve("tsx/cli");
   } catch {
     return undefined;
   }
