@@ -23,10 +23,10 @@ type NodeBinTarget = {
 const scriptPath = dirname(fileURLToPath(import.meta.url));
 
 class NodePackageBinInit extends LibBase {
-  public async task1(initialCommandName?: string): Promise<void> {
+  public async task1(): Promise<void> {
     const packageJsonPath = this.packagePath("package.json");
     const pkg = this.readRequiredJsonFile<NodeBinPackageJson>(packageJsonPath);
-    const target = await this.nodeBinTargetAsk(pkg, initialCommandName);
+    const target = await this.nodeBinTargetAsk(pkg);
     const wrapperPath = this.packagePath(target.wrapperPath);
 
     this.packageJsonSet(packageJsonPath, pkg, target);
@@ -46,8 +46,8 @@ class NodePackageBinInit extends LibBase {
     }
   }
 
-  private async nodeBinTargetAsk(pkg: NodeBinPackageJson, initialCommandName?: string): Promise<NodeBinTarget> {
-    const commandName = await this.commandNameAsk(pkg, initialCommandName);
+  private async nodeBinTargetAsk(pkg: NodeBinPackageJson): Promise<NodeBinTarget> {
+    const commandName = await this.commandNameAsk(pkg);
     const wrapperPath = this.wrapperPathDefault(commandName, pkg);
     await this.targetPathsConfirm([
       this.packagePath("package.json"),
@@ -68,10 +68,7 @@ class NodePackageBinInit extends LibBase {
     return target;
   }
 
-  private async commandNameAsk(pkg: NodeBinPackageJson, initialCommandName?: string): Promise<string> {
-    if (initialCommandName) {
-      return this.commandNameNormalize(initialCommandName);
-    }
+  private async commandNameAsk(pkg: NodeBinPackageJson): Promise<string> {
     const prompts = await import("prompts");
     const response = await prompts.default({
       type: "text",

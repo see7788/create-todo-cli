@@ -1,6 +1,5 @@
 import { existsSync, rmSync } from "node:fs";
 import path from "path";
-import { fileURLToPath } from "url";
 import prompts from "prompts";
 import GitBase, { Appexit } from "../public/git";
 
@@ -23,11 +22,9 @@ class NodePkgCreate extends GitBase {
     },
   };
 
-  async task1(initial?: string, initialSource?: string) {
-    const target = await this.askTarget(initial);
-    const sourceCreate = initialSource
-      ? this.sourceCreateFromInput(initialSource)
-      : await this.askSource();
+  async task1() {
+    const target = await this.askTarget();
+    const sourceCreate = await this.askSource();
 
     try {
       const cmd = await sourceCreate(target);
@@ -40,9 +37,8 @@ class NodePkgCreate extends GitBase {
     }
   }
 
-  async askTarget(initial?: string): Promise<CreateTarget> {
+  async askTarget(): Promise<CreateTarget> {
     const name = await this.confirmOutputName({
-      initialName: initial,
       defaultName: "my-app",
       message: "name",
       existsError: true
@@ -67,27 +63,6 @@ class NodePkgCreate extends GitBase {
 
     if (r.v === undefined) throw new Error("cancel");
     return this.sourceCreateMap[String(r.v)];
-  }
-
-  private sourceCreateFromInput(input: string): (c: CreateTarget) => string | Promise<string> {
-    const source = input.trim();
-    if (!source) throw new Error("source is empty");
-
-    if (source.startsWith("command:")) {
-      const command = source.slice("command:".length).trim();
-      if (!command) throw new Error("command source is empty");
-      return (c) => command.replaceAll("{name}", c.name).replaceAll("{path}", c.path);
-    }
-
-    if (source.startsWith("vite:")) {
-      const template = source.slice("vite:".length).trim();
-      if (!template) throw new Error("vite template is empty");
-      return (c) => `pnpm create vite "${c.name}" -- --template ${template}`;
-    }
-
-    const sourceCreate = this.sourceCreateMap[source];
-    if (!sourceCreate) throw new Error(`unknown source: ${source}`);
-    return sourceCreate;
   }
 
   async askRepo() {
@@ -132,10 +107,6 @@ class NodePkgCreate extends GitBase {
     console.log("pnpm i");
     console.log("pnpm dev");
   }
-}
-
-if (path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1])) {
-  new NodePkgCreate().task1();
 }
 
 export default NodePkgCreate;

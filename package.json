@@ -3,6 +3,7 @@
   "version": "v1.3.6",
   "description": "",
   "files": [
+    "README.md",
     "scripts/",
     "src/"
   ],

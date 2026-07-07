@@ -1,6 +1,5 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { buildSync } from "esbuild";
 import GitBase, { Appexit } from "../public/git";
 
@@ -49,10 +48,10 @@ class NodePkgDist extends GitBase {
   private target!: DistTarget;
   private entryIndex = "";
 
-  public async task1(initialPackageName?: string, initialMode?: NodePkgDistMode): Promise<void> {
-    this.target = await this.targetAsk(initialPackageName);
+  public async task1(): Promise<void> {
+    this.target = await this.targetAsk();
     console.log(`npm 包产物目录: ${this.pathDisplay(this.target.path)}`);
-    const mode = initialMode ?? await this.modeAsk();
+    const mode = await this.modeAsk();
     if (mode === "source") {
       await this.sourceDistRun();
       return;
@@ -61,10 +60,9 @@ class NodePkgDist extends GitBase {
     await this.bundleDistRun();
   }
 
-  private async targetAsk(initialPackageName?: string): Promise<DistTarget> {
+  private async targetAsk(): Promise<DistTarget> {
     const targetName = await this.confirmOutputName({
       basePath: dirname(this.cwdProjectInfo.pkgPath),
-      initialName: initialPackageName,
       defaultName: `${basename(this.cwdProjectInfo.pkgPath)}_dist`,
       message: "请输入 npm 包产物目录名",
     });
@@ -654,10 +652,6 @@ class NodePkgDist extends GitBase {
     const relativePath = relative(root, file);
     return Boolean(relativePath) && !relativePath.startsWith("..") && !isAbsolute(relativePath);
   }
-}
-
-if (resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1])) {
-  new NodePkgDist().task1();
 }
 
 export default NodePkgDist;

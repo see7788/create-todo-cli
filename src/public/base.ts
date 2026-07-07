@@ -25,7 +25,6 @@ interface cwdProjectInfo_t {
 
 type ConfirmOutputNameOptions = {
     basePath?: string;
-    initialName?: string;
     defaultName: string;
     message: string;
     existsError?: boolean;
@@ -65,7 +64,6 @@ export type PackageJsonRecord = {
     dependencies?: Record<string, string>;
 } & Record<string, unknown>;
 
-/**基类 - 提供通用的工具方法和项目信息访问*/
 export default class LibBase {
     protected readonly cwdProjectInfo: cwdProjectInfo_t
 
@@ -137,45 +135,9 @@ export default class LibBase {
         }
     }
 
-    /** Ask for a valid output name. */
-    protected async askValidOutputName(options: ConfirmOutputNameOptions): Promise<string> {
-        let name = options.initialName?.trim() || "";
-        while (true) {
-            if (!name) {
-                const prompts = await import("prompts");
-                const response = await prompts.default({
-                    type: "text",
-                    name: "name",
-                    message: options.message,
-                    initial: options.defaultName,
-                });
-                if (!response.name) {
-                    throw new Error("user-cancelled");
-                }
-                name = String(response.name).trim();
-            }
-
-            try {
-                this.validateOutputName(name);
-                const basePath = options.basePath ?? this.cwdProjectInfo.cwdPath;
-                const targetPath = path.resolve(basePath, name);
-                if (options.existsError && fs.existsSync(targetPath)) {
-                    throw new Error(`目录已存在: ${name}`);
-                }
-                return name;
-            } catch (error) {
-                if (error instanceof Error && error.message === "user-cancelled") {
-                    throw error;
-                }
-                console.error(error instanceof Error ? error.message : String(error));
-                name = "";
-            }
-        }
-    }
-
-    /**确认输出名称 - 支持命令行传入、默认值、名称校验和目标路径确认 */
+    /**确认输出名称 - 支持默认值、名称校验和目标路径确认 */
     protected async confirmOutputName(options: ConfirmOutputNameOptions): Promise<string> {
-        let name = options.initialName?.trim() || "";
+        let name = "";
         while (true) {
             if (!name) {
                 const prompts = await import("prompts");

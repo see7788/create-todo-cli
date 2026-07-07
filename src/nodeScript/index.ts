@@ -1,45 +1,33 @@
 import GitBase from "../public/git";
+import ScriptBase, { type ScriptCmds } from "../public/script";
 import NodePackageBinInit from "./nodePackageBinInit";
 import NodePkgCreate from "./nodePkgCreate";
 import NodePkgDist from "./nodePkgDist";
 
-type CommandContext = {
-  param?: string;
-  source?: string;
-};
+export default class NodeScript extends ScriptBase {
+  public readonly scriptName = "nodeScript";
 
-class NodeScript {
-  public readonly menu = {
-    "nodeScript/nodePkgCreate  create project": this.nodePkgCreate,
-    "nodeScript/nodePkgDist  dist npm package": this.nodePkgDist,
-    "nodeScript/nodePackageBinInit  init package.json bin TS/JS entry": this.nodePackageBinInit,
-    "nodeScript/nodePackageIdentityInit  init package.json identity": this.nodePackageIdentityInit,
-  } as const;
+  protected readonly cmds: ScriptCmds = [
+    "nodePkgCreate",
+    "nodePkgDist",
+    "nodePackageBinInit",
+    "nodePackageIdentityInit",
+  ];
 
-  public readonly command = {
-    nodePkgCreate: this.nodePkgCreate,
-    nodePkgDist: this.nodePkgDist,
-    nodePackageBinInit: this.nodePackageBinInit,
-    nodePackageIdentityInit: this.nodePackageIdentityInit,
-  } as const;
-
-  private nodePkgCreate({ param, source }: CommandContext): Promise<void> {
-    return new NodePkgCreate().task1(param, source);
+  protected nodePkgCreateRun(): Promise<void> {
+    return new NodePkgCreate().task1();
   }
 
-  private nodePkgDist({ param }: CommandContext): Promise<void> {
-    return new NodePkgDist().task1(param);
+  protected nodePkgDistRun(): Promise<void> {
+    return new NodePkgDist().task1();
   }
 
-  private nodePackageBinInit({ param }: CommandContext): Promise<void> {
-    return new NodePackageBinInit().task1(param);
+  protected nodePackageBinInitRun(): Promise<void> {
+    return new NodePackageBinInit().task1();
   }
 
-  private nodePackageIdentityInit(): Promise<void> {
-    return new GitBase().rewriteCurrentPackageIdentity();
+  protected async nodePackageIdentityInitRun(): Promise<void> {
+    await new GitBase().rewriteCurrentPackageIdentity();
   }
+
 }
-
-export const nodeScript = new NodeScript();
-
-export default nodeScript;

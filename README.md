@@ -9,16 +9,20 @@
 ```bash
 pnpm dlx github:see7788/create-todo-cli
 pnpm dlx github:see7788/create-todo-cli help
-pnpm dlx github:see7788/create-todo-cli nodePkgCreate my-vite-app vite:react-ts
-pnpm dlx github:see7788/create-todo-cli nodePkgDist my-package
-pnpm dlx github:see7788/create-todo-cli nodePackageBinInit my-command
-pnpm dlx github:see7788/create-todo-cli nodePackageIdentityInit
-pnpm dlx github:see7788/create-todo-cli pnpmInsert
-pnpm dlx github:see7788/create-todo-cli pnpmWorkspaceInit
-pnpm dlx github:see7788/create-todo-cli gitPush
-pnpm dlx github:see7788/create-todo-cli gitAutoPush
-pnpm dlx github:see7788/create-todo-cli gitignoreInit
-pnpm dlx github:see7788/create-todo-cli githubPublishYmlInit
+pnpm dlx github:see7788/create-todo-cli nodeScript
+pnpm dlx github:see7788/create-todo-cli nodeScript/nodePkgCreate
+pnpm dlx github:see7788/create-todo-cli nodeScript/nodePkgDist
+pnpm dlx github:see7788/create-todo-cli nodeScript/nodePackageBinInit
+pnpm dlx github:see7788/create-todo-cli nodeScript/nodePackageIdentityInit
+pnpm dlx github:see7788/create-todo-cli pnpmScript
+pnpm dlx github:see7788/create-todo-cli pnpmScript/pnpmInsert
+pnpm dlx github:see7788/create-todo-cli pnpmScript/pnpmWorkspaceInit
+pnpm dlx github:see7788/create-todo-cli gitScript
+pnpm dlx github:see7788/create-todo-cli gitScript/gitPush
+pnpm dlx github:see7788/create-todo-cli gitScript/gitAutoPush
+pnpm dlx github:see7788/create-todo-cli gitScript/gitignoreInit
+pnpm dlx github:see7788/create-todo-cli githubScript
+pnpm dlx github:see7788/create-todo-cli githubScript/githubPublishYmlInit
 ```
 
 
@@ -26,43 +30,36 @@ pnpm dlx github:see7788/create-todo-cli githubPublishYmlInit
 
 交互式 TypeScript 项目脚手架工具，主要能力包括：创建项目、抽取 npm 包、初始化 package 配置、初始化 GitHub 仓库，以及显式补齐 pnpm workspace 中的外部兄弟目录包。
 
-入口位于 `src/index.ts`。命令名采用“环境/对象在前，动作在后”的风格。外部只需要看各能力目录 `index.ts` 公开的 `menu / command`。
+入口位于 `src/index.ts`。命令名采用“环境/对象在前，动作在后”的风格。命令行只负责直达交互分支，不做参数预填。新增命令时，能力 `index.ts` 的 `cmds` 只写命令名字符串，实现写同名 `xxxRun`。
 
-## 树
+## 命令树
 
 ```txt
-create-todo-cli/
-├─ src/
-│  ├─ index.ts
-│  │  ├─ CLI 入口
-│  │  ├─ help / --help / -h
-│  │  └─ 无参数或未知命令时展示以下命令树
-│  ├─ nodeScript/
-│  │  └─ index.ts -> nodeScript
-│  │     ├─ nodeScript/nodePkgCreate  create project <?name> <?source>；先提示项目产物目录，再选择来源
-│  │     ├─ nodeScript/nodePkgDist  dist npm package <?name>；先提示 npm 包产物目录，再选择抽取方式和入口文件
-│  │     ├─ nodeScript/nodePackageBinInit  init package.json bin TS/JS entry <?commandName>；先提示 wrapper 产物路径，再选择入口文件
-│  │     └─ nodeScript/nodePackageIdentityInit  init package.json identity
-│  ├─ pnpmScript/
-│  │  └─ index.ts -> pnpmScript
-│  │     ├─ pnpmScript/pnpmInsert  clone missing ../ pnpm workspace packages
-│  │     └─ pnpmScript/pnpmWorkspaceInit  init pnpm workspace
-│  ├─ gitScript/
-│  │  └─ index.ts -> gitScript
-│  │     ├─ gitScript/gitPush  init GitHub repo and push
-│  │     ├─ gitScript/gitAutoPush  auto GitHub repo push
-│  │     └─ gitScript/gitignoreInit  init .gitignore
-│  ├─ githubScript/
-│  │  └─ index.ts -> githubScript
-│  │     └─ githubScript/githubPublishYmlInit  init publish.yml set
-│  └─ public/
-│     ├─ base.ts -> LibBase / Appexit / path / json / shell / prompt
-│     ├─ fileTpl.ts -> 模板读取
-│     ├─ pnpm.ts -> pnpm workspace / .npmrc
-│     └─ git.ts -> git / GitHub / .gitignore / 项目身份
-├─ scripts/
-│  └─ create-todo-cli.js
-│     └─ package bin 运行产物，不作为源码入口维护
-├─ package.json
-└─ README.md
+create-todo-cli
+├─ help
+│  └─ 输出 README.md
+├─ nodeScript
+│  ├─ nodePkgCreate
+│  │  └─ 交互确认项目产物目录，再选择创建来源
+│  ├─ nodePkgDist
+│  │  └─ 交互确认 npm 包产物目录，再选择抽取方式和入口文件
+│  ├─ nodePackageBinInit
+│  │  └─ 交互确认 bin 命令名和入口文件，生成 package.json bin wrapper
+│  └─ nodePackageIdentityInit
+│     └─ 交互重写当前 package.json 项目身份
+├─ pnpmScript
+│  ├─ pnpmInsert
+│  │  └─ 根据 pnpm-workspace.yaml 克隆缺失的 ../ 兄弟目录包
+│  └─ pnpmWorkspaceInit
+│     └─ 初始化 pnpm workspace、.npmrc、pnpm-workspace.yaml
+├─ gitScript
+│  ├─ gitPush
+│  │  └─ 初始化 git / GitHub 仓库，补齐基础配置并 push
+│  ├─ gitAutoPush
+│  │  └─ 先执行 gitPush，再按分钟间隔自动提交和 push
+│  └─ gitignoreInit
+│     └─ 初始化 .gitignore
+└─ githubScript
+   └─ githubPublishYmlInit
+      └─ 交互选择并写入 GitHub Actions 发布配置
 ```

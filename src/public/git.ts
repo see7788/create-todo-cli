@@ -150,7 +150,7 @@ export default class GitBase extends PnpmBase {
             return;
         }
 
-        const { GithubPublishYmlInit } = await import("../githubScript/index");
+        const { default: GithubPublishYmlInit } = await import("../githubScript/githubPublishYmlInit");
         const result = await new GithubPublishYmlInit().createForProject({
             packageName: identity.packageName,
             targetPath,
