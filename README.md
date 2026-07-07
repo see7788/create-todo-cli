@@ -3,7 +3,6 @@
 前置条件：
 - 已安装 Node.js 和 pnpm
 - 已安装并配置好 Codex CLI
-- 已安装 tsx 依赖
 
 使用方式：
 ```bash
