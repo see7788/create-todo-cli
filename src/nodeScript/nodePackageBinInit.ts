@@ -3,7 +3,7 @@ import { execSync } from "node:child_process";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Mustache from "mustache";
-import LibBase from "../public/base";
+import LibBase, { Appexit } from "../base";
 
 type NodeBinPackageJson = {
   name?: string;
@@ -18,6 +18,12 @@ type NodeBinTarget = {
   commandName: string;
   wrapperPath: string;
   entryPath: string;
+};
+
+type GlobalBinTarget = {
+  globalBin: string;
+  removedFiles: string[];
+  linkTargets: string[];
 };
 
 const scriptPath = dirname(fileURLToPath(import.meta.url));
@@ -48,7 +54,7 @@ class NodePackageBinInit extends LibBase {
 
   private async nodeBinTargetAsk(pkg: NodeBinPackageJson): Promise<NodeBinTarget> {
     const commandName = await this.commandNameAsk(pkg);
-    const wrapperPath = this.wrapperPathDefault(commandName, pkg);
+    const wrapperPath = await this.wrapperPathAsk(commandName, pkg);
     await this.targetPathsConfirm([
       this.packagePath("package.json"),
       this.packagePath(wrapperPath),
@@ -57,7 +63,7 @@ class NodePackageBinInit extends LibBase {
     const entryPath = await this.entryPathAsk();
     const entryRelativePath = this.packageRelativePath(entryPath);
     if (entryRelativePath.startsWith("..") || isAbsolute(entryRelativePath)) {
-      throw new Error("bin 入口文件必须位于当前项目内");
+      throw new Appexit("bin 入口文件必须位于当前项目内");
     }
 
     const target = {
@@ -82,10 +88,24 @@ class NodePackageBinInit extends LibBase {
     return this.commandNameNormalize(String(response.commandName));
   }
 
+  private async wrapperPathAsk(commandName: string, pkg: NodeBinPackageJson): Promise<string> {
+    const prompts = await import("prompts");
+    const response = await prompts.default({
+      type: "text",
+      name: "wrapperPath",
+      message: "请输入 bin wrapper 路径",
+      initial: this.wrapperPathDefault(commandName, pkg),
+    });
+    if (!response.wrapperPath) {
+      throw new Error("user-cancelled");
+    }
+    return this.wrapperPathNormalize(String(response.wrapperPath), pkg);
+  }
+
   private commandNameNormalize(commandName: string): string {
     const normalizedName = this.toPackageName(commandName.trim());
     if (!normalizedName) {
-      throw new Error("Command name is empty");
+      throw new Appexit("Command name is empty");
     }
     return normalizedName;
   }
@@ -112,10 +132,10 @@ class NodePackageBinInit extends LibBase {
   private entryPathResolve(inputPath: string): string {
     const resolvedPath = resolve(inputPath);
     if (!existsSync(resolvedPath) || !statSync(resolvedPath).isFile()) {
-      throw new Error(`Entry file not found: ${resolvedPath}`);
+      throw new Appexit(`Entry file not found: ${resolvedPath}`);
     }
     if (![".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].some(ext => resolvedPath.endsWith(ext))) {
-      throw new Error(`Unsupported entry file: ${resolvedPath}`);
+      throw new Appexit(`Unsupported entry file: ${resolvedPath}`);
     }
     return resolvedPath;
   }
@@ -138,6 +158,28 @@ class NodePackageBinInit extends LibBase {
       return Object.keys(pkg.bin);
     }
     return [];
+  }
+
+  private wrapperPathNormalize(wrapperPath: string, pkg: NodeBinPackageJson): string {
+    const defaultExtension = pkg.type === "module" ? ".js" : ".mjs";
+    const inputPath = wrapperPath.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+    if (!inputPath) {
+      throw new Appexit("bin wrapper 路径为空");
+    }
+
+    const withExtension = inputPath.endsWith(".js") || inputPath.endsWith(".mjs")
+      ? inputPath
+      : `${inputPath}${defaultExtension}`;
+    if (pkg.type !== "module" && withExtension.endsWith(".js")) {
+      throw new Appexit("非 type module 项目 bin wrapper 使用 .mjs");
+    }
+
+    const resolvedPath = resolve(this.cwdProjectInfo.pkgPath, withExtension);
+    const relativePath = this.packageRelativePath(resolvedPath);
+    if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
+      throw new Appexit("bin wrapper 路径必须位于当前项目内");
+    }
+    return relativePath;
   }
 
   private nodeBinWrapperWrite(target: NodeBinTarget): void {
@@ -190,21 +232,24 @@ class NodePackageBinInit extends LibBase {
   }
 
   private async pnpmLinkRun(pkg: NodeBinPackageJson): Promise<string[]> {
+    const globalBinTarget = this.globalBinTargetGet(pkg);
+    await this.targetPathsConfirm([...globalBinTarget.removedFiles, ...globalBinTarget.linkTargets]);
+
     const cwd = process.cwd();
     try {
       process.chdir(this.cwdProjectInfo.pkgPath);
-      this.runInteractiveCommand("pnpm install");
-      this.runInteractiveCommand("pnpm link");
+      await this.runInteractiveCommand("pnpm install");
+      await this.runInteractiveCommand("pnpm link");
     } finally {
       process.chdir(cwd);
     }
-    return this.globalBinLinksWrite(pkg);
+    return this.globalBinLinksWrite(pkg, globalBinTarget);
   }
 
-  private async globalBinLinksWrite(pkg: NodeBinPackageJson): Promise<string[]> {
+  private globalBinTargetGet(pkg: NodeBinPackageJson): GlobalBinTarget {
     const binEntries = this.binEntries(pkg);
     if (binEntries.length === 0) {
-      throw new Error("package.json bin is empty");
+      throw new Appexit("package.json bin is empty");
     }
 
     const globalBin = execSync("pnpm bin -g", {
@@ -213,10 +258,9 @@ class NodePackageBinInit extends LibBase {
       stdio: ["ignore", "pipe", "pipe"],
     }).trim();
     if (!globalBin) {
-      throw new Error("Cannot resolve pnpm global bin directory");
+      throw new Appexit("Cannot resolve pnpm global bin directory");
     }
 
-    mkdirSync(globalBin, { recursive: true });
     const commandNames = new Set(binEntries.map(([commandName]) => commandName));
     const removedFiles = this.globalBinStaleLinksFind(globalBin, commandNames);
     const linkTargets = binEntries.flatMap(([commandName]) => {
@@ -225,7 +269,18 @@ class NodePackageBinInit extends LibBase {
         ? [commandPath, `${commandPath}.cmd`, `${commandPath}.ps1`]
         : [commandPath];
     });
-    await this.targetPathsConfirm([...removedFiles, ...linkTargets]);
+
+    return {
+      globalBin,
+      removedFiles,
+      linkTargets,
+    };
+  }
+
+  private async globalBinLinksWrite(pkg: NodeBinPackageJson, globalBinTarget: GlobalBinTarget): Promise<string[]> {
+    const binEntries = this.binEntries(pkg);
+    const { globalBin, removedFiles } = globalBinTarget;
+    mkdirSync(globalBin, { recursive: true });
     for (const filePath of removedFiles) {
       rmSync(filePath, { force: true });
     }
@@ -277,6 +332,9 @@ class NodePackageBinInit extends LibBase {
   }
 
   private globalBinFiles(globalBin: string): string[] {
+    if (!existsSync(globalBin)) {
+      return [];
+    }
     return readdirSync(globalBin, { withFileTypes: true })
       .filter(item => item.isFile())
       .map(item => resolve(globalBin, item.name));

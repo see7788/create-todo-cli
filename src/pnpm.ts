@@ -37,8 +37,8 @@ export default class PnpmBase extends LibBase {
         return packages;
     }
 
-    public async setupPnpmWorkspaceRoot(): Promise<void> {
-        await this.pnpmRootSetupAsk(this.cwdProjectInfo.workspacePath);
+    public async workspaceInit(targetPath = this.cwdProjectInfo.workspacePath): Promise<void> {
+        await this.pnpmRootSetupAsk(targetPath);
     }
 
     protected async pnpmRootSetupAsk(targetPath: string): Promise<void> {
@@ -87,7 +87,7 @@ export default class PnpmBase extends LibBase {
         if (fs.existsSync(filePath)) {
             return;
         }
-        fs.writeFileSync(filePath, new FileTplCore().pnpm_workspace_yaml_create(), "utf-8");
+        fs.writeFileSync(filePath, new FileTplCore().pnpmWorkspaceYamlCreate(), "utf-8");
     }
 
     private npmrcSet(targetPath: string): void {

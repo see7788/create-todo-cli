@@ -1,13 +1,16 @@
-import ScriptBase, { type ScriptCmds } from "../public/script";
-import GitBase from "../public/git";
+import PnpmBase from "../pnpm";
+import ScriptBase from "../script";
 import PnpmInsert from "./pnpmInsert";
 
 export default class PnpmScript extends ScriptBase {
   public readonly scriptName = "pnpmScript";
 
-  protected readonly cmds: ScriptCmds = [
+  protected readonly cmds = [
     "pnpmInsert",
     "pnpmWorkspaceInit",
+    "pnpm dlx github:see7788/codexhono dev",
+    "pnpm dlx github:see7788/codexhono stop",
+    "pnpm dlx github:see7788/codexhono restart",
   ];
 
   protected async pnpmInsertRun(): Promise<void> {
@@ -15,6 +18,6 @@ export default class PnpmScript extends ScriptBase {
   }
 
   protected async pnpmWorkspaceInitRun(): Promise<void> {
-    await new GitBase().setupPnpmWorkspaceRoot();
+    await new PnpmBase({ requirePackage: false }).workspaceInit();
   }
 }

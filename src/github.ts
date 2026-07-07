@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Mustache from "mustache";
 import prompts from "prompts";
-import GitBase from "../public/git";
+import GitBase, { Appexit } from "./git";
 
 type PackageJsonRecord = {
   name?: string;
@@ -14,32 +14,37 @@ type PackageJsonRecord = {
   scripts?: Record<string, string>;
 } & Record<string, unknown>;
 
-type PublishTask = "npmjs" | "github-packages" | "manual-npmjs";
+export type PublishTask = "npmjs" | "github-packages" | "manual-npmjs";
 
-type GithubPublishYmlContext = {
+export type GithubPublishYmlContext = {
   packageName: string;
   targetPath: string;
   workingDirectory?: string;
   githubOwner?: string;
 };
 
-type GithubPublishYmlResult = {
+export type GithubPublishYmlResult = {
   files: string[];
   tasks: PublishTask[];
 };
 
-const scriptPath = path.dirname(fileURLToPath(import.meta.url));
+const templatePath = path.join(path.dirname(fileURLToPath(import.meta.url)), "tpl");
 
-export default class GithubPublishYmlInit extends GitBase {
+export default class GithubBase extends GitBase {
   constructor() {
     super({ requirePackage: false });
   }
 
-  public async createCurrent(startPath = process.cwd()): Promise<GithubPublishYmlResult | undefined> {
+  public async publishYmlInit(context: GithubPublishYmlContext | string = process.cwd()): Promise<GithubPublishYmlResult | undefined> {
+    if (typeof context !== "string") {
+      return this.publishYmlSet(context);
+    }
+
+    const startPath = context;
     const targetPath = this.packageRootFind(startPath);
     const pkg = this.readJsonFile<PackageJsonRecord>(path.join(targetPath, "package.json")) ?? {};
     const packageName = String(pkg.name ?? path.basename(targetPath));
-    const result = await this.createForProject({
+    const result = await this.publishYmlSet({
       packageName,
       targetPath,
       githubOwner: this.githubRemoteOptional(targetPath)?.owner ?? this.githubOwnerFromPackage(pkg),
@@ -51,7 +56,7 @@ export default class GithubPublishYmlInit extends GitBase {
     return result;
   }
 
-  public async createForProject(context: GithubPublishYmlContext): Promise<GithubPublishYmlResult | undefined> {
+  private async publishYmlSet(context: GithubPublishYmlContext): Promise<GithubPublishYmlResult | undefined> {
     const tasks = await this.tasksAsk();
     if (tasks.length === 0) {
       console.log("跳过发布配置");
@@ -270,7 +275,7 @@ export default class GithubPublishYmlInit extends GitBase {
   }
 
   private templateRender(name: string, view: Record<string, unknown>): string {
-    return Mustache.render(fs.readFileSync(path.join(scriptPath, name), "utf-8"), view);
+    return Mustache.render(fs.readFileSync(path.join(templatePath, name), "utf-8"), view);
   }
 
   private githubScopeGet(context: GithubPublishYmlContext, pkg: PackageJsonRecord): string {
@@ -278,7 +283,7 @@ export default class GithubPublishYmlInit extends GitBase {
     const githubOwner = context.githubOwner ?? this.githubRemoteOptional(context.targetPath)?.owner ?? this.githubOwnerFromPackage(pkg);
     const scope = packageScope ?? githubOwner;
     if (!scope) {
-      throw new Error("无法从 package.json 或 git remote 推断 GitHub owner/scope");
+      throw new Appexit("无法从 package.json 或 git remote 推断 GitHub owner/scope");
     }
     return scope.replace(/^@/, "");
   }
@@ -300,7 +305,7 @@ export default class GithubPublishYmlInit extends GitBase {
       }
       dir = path.dirname(dir);
     }
-    throw new Error(`未找到 package.json: ${startPath}`);
+    throw new Appexit(`未找到 package.json: ${startPath}`);
   }
 
   private publishLinesFileEnsure(filePath: string, lines: string[]): void {

@@ -1,12 +1,12 @@
-import ScriptBase, { type ScriptCmds } from "../public/script";
-import GitBase from "../public/git";
+import GitBase from "../git";
+import ScriptBase from "../script";
 import GitAutoPush from "./gitAutoPush";
 import GitPush from "./gitPush";
 
 export default class GitScript extends ScriptBase {
   public readonly scriptName = "gitScript";
 
-  protected readonly cmds: ScriptCmds = [
+  protected readonly cmds = [
     "gitPush",
     "gitAutoPush",
     "gitignoreInit",
@@ -21,6 +21,6 @@ export default class GitScript extends ScriptBase {
   }
 
   protected async gitignoreInitRun(): Promise<void> {
-    await new GitBase().initCurrentGitignore();
+    await new GitBase({ requirePackage: false }).gitignoreInit();
   }
 }

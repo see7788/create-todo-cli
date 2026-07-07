@@ -1,20 +1,21 @@
 import { existsSync, rmSync } from "node:fs";
 import path from "path";
 import prompts from "prompts";
-import GitBase, { Appexit } from "../public/git";
+import ProjectBase from "../project";
+import { Appexit } from "../base";
 
 type CreateTarget = { name: string; path: string };
 
-class NodePkgCreate extends GitBase {
+class NodePkgCreate extends ProjectBase {
   private sourceCreateMap: Record<string, (c: CreateTarget) => string | Promise<string>> = {
     Vite脚手架: (c) => `pnpm create vite "${c.name}"`,
     VSCode插件脚手架: (c) => `pnpm create vscode-extension "${c.name}"`,
     Electron脚手架: (c) => `degit see7788/electron-template "${c.name}"`,
     TS脚手架: (c) => `degit see7788/ts-template "${c.name}"`,
     Hono脚手架: (c) => `pnpm create hono "${c.name}"`,
-    degit克隆: async () => {
+    degit克隆: async (c) => {
       const repo = await this.askRepo();
-      return `degit ${repo} "${repo.split("/")[1]}"`;
+      return `degit ${repo} "${c.name}"`;
     },
     Custom命令: async (c) => {
       const cmd = await this.askCmd();
@@ -28,8 +29,8 @@ class NodePkgCreate extends GitBase {
 
     try {
       const cmd = await sourceCreate(target);
-      this.runInteractiveCommand(cmd);
-      await this.finalizeProjectOutput(target.path, target.name);
+      await this.runInteractiveCommand(cmd);
+      await this.nodePkgFinalize(target.path, target.name);
       this.done(target);
     } catch (e) {
       this.clean(target);
@@ -61,7 +62,7 @@ class NodePkgCreate extends GitBase {
       }))
     });
 
-    if (r.v === undefined) throw new Error("cancel");
+    if (r.v === undefined) throw new Error("user-cancelled");
     return this.sourceCreateMap[String(r.v)];
   }
 
@@ -72,11 +73,11 @@ class NodePkgCreate extends GitBase {
       message: "repo"
     });
 
-    if (!r.v) throw new Error("cancel");
+    if (!r.v) throw new Error("user-cancelled");
 
     const v = String(r.v).trim();
     const m = this.githubRemoteParse(v);
-    if (!m) throw new Error("bad repo");
+    if (!m) throw new Appexit("无法解析 GitHub repo");
 
     return `${m.owner}/${m.repo}`;
   }
@@ -89,7 +90,7 @@ class NodePkgCreate extends GitBase {
       initial: "pnpm create hono {name}"
     });
 
-    if (!r.v) throw new Error("cancel");
+    if (!r.v) throw new Error("user-cancelled");
     return String(r.v).trim();
   }
 
@@ -97,7 +98,7 @@ class NodePkgCreate extends GitBase {
     const p = path.resolve(t.path);
     if (!existsSync(p)) return;
     if (p === process.cwd() || p === path.parse(p).root) {
-      throw new Appexit("danger");
+      throw new Appexit("清理目标路径危险，已停止");
     }
     rmSync(p, { recursive: true, force: true });
   }

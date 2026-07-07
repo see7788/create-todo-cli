@@ -1,14 +1,14 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import prompts from "prompts";
-import GitBase, { Appexit, type GitRemote } from "../public/git";
+import { Appexit } from "../base";
+import GitBase from "../git";
+import PnpmBase from "../pnpm";
 
 type PlatformPushMode = "current" | "siblings";
 
 export default class GitPush extends GitBase {
   private projectRoot!: string;
-  private projectRepoName!: string;
-  private platformGithubLoginCache?: string;
 
   constructor() {
     super({ requirePackage: false });
@@ -16,7 +16,6 @@ export default class GitPush extends GitBase {
 
   public async task1(): Promise<void> {
     this.projectRoot = this.projectRootFind();
-    this.projectRepoName = basename(this.projectRoot);
     await this.platformProjectPush();
   }
 
@@ -94,13 +93,14 @@ export default class GitPush extends GitBase {
   private async platformProjectPushTarget(targetPath: string): Promise<void> {
     console.log(`GitHub 提交源路径: ${this.pathDisplay(targetPath)}`);
     const repoName = this.projectRepoNameGet(targetPath);
-    const projectRepo = this.platformGithubProjectRepoGet(repoName, targetPath);
+    const projectRepo = await this.repoEnsure(targetPath, repoName);
     if (!projectRepo) {
       throw new Appexit("无法推断 GitHub owner，无法初始化 GitHub 仓库");
     }
 
-    await this.platformGitProjectEnsure(targetPath, repoName);
-    await this.gitProjectFilesPrepare(targetPath);
+    await this.gitignoreInit(targetPath);
+    await new PnpmBase({ requirePackage: false }).workspaceInit(targetPath);
+    await this.platformPathFileSet(targetPath);
     await this.platformGitEnsureInitialCommit(targetPath);
     await this.platformGitPushHead(targetPath);
 
@@ -130,55 +130,10 @@ export default class GitPush extends GitBase {
     return basename(projectRoot);
   }
 
-  private async platformGitProjectEnsure(targetPath: string, repoName: string): Promise<GitRemote | undefined> {
-    const projectRepo = this.platformGithubProjectRepoGet(repoName, targetPath);
-    if (!projectRepo) {
-      console.log("GitHub owner not detected, skip repository creation");
-      return undefined;
-    }
-
-    if (!existsSync(join(targetPath, ".git"))) {
-      await this.commandRunInherit("git init -b master", targetPath, "git init");
-      console.log(`已初始化 git 仓库: ${this.pathDisplay(targetPath)}`);
-    }
-
-    const targetUrl = `https://github.com/${projectRepo.owner}/${projectRepo.repo}.git`;
-    if (this.platformGithubRepoExists(projectRepo, targetPath)) {
-      console.log(`GitHub repository exists, bind to ${projectRepo.owner}/${projectRepo.repo}`);
-    } else {
-      const visibilityResponse = await prompts({
-        type: "select",
-        name: "visibility",
-        message: `GitHub repository ${projectRepo.owner}/${projectRepo.repo} does not exist. Create as:`,
-        choices: [
-          { title: "public", value: "public" },
-          { title: "private", value: "private" },
-        ],
-        initial: 0,
-      });
-      if (!visibilityResponse.visibility) {
-        throw new Error("user-cancelled");
-      }
-      const visibility = visibilityResponse.visibility as "public" | "private";
-      await this.commandRunInherit(
-        `gh repo create ${this.shellArg(`${projectRepo.owner}/${projectRepo.repo}`)} --${visibility} --clone=false`,
-        targetPath,
-        `gh repo create ${projectRepo.owner}/${projectRepo.repo}`,
-      );
-      console.log(`Created GitHub ${visibility} repository: ${projectRepo.owner}/${projectRepo.repo}`);
-    }
-
-    const currentUrl = this.commandReadOptional("git config --get remote.origin.url", targetPath);
-    if (currentUrl === targetUrl) {
-      return projectRepo;
-    }
-    if (currentUrl) {
-      await this.commandRunInherit(`git remote set-url origin ${this.shellArg(targetUrl)}`, targetPath, "git remote set-url");
-    } else {
-      await this.commandRunInherit(`git remote add origin ${this.shellArg(targetUrl)}`, targetPath, "git remote add");
-    }
-    console.log(`已设置 origin: ${targetUrl}`);
-    return projectRepo;
+  private async platformPathFileSet(targetPath: string): Promise<void> {
+    const filePath = join(targetPath, "path.md");
+    await this.targetPathsConfirm([filePath]);
+    writeFileSync(filePath, `${this.pathDisplay(targetPath)}\n`, "utf-8");
   }
 
   private async platformGitEnsureInitialCommit(targetPath: string): Promise<void> {
@@ -190,7 +145,7 @@ export default class GitPush extends GitBase {
     try {
       await this.commandRunInherit(`git commit -m ${this.shellArg("chore: initial commit")}`, targetPath, "git commit");
       console.log(`已创建初始提交: ${this.pathDisplay(targetPath)}`);
-    } catch {
+    } catch (error) {
       const status = this.commandReadOptional("git status --porcelain", targetPath);
       if (!status) {
         await this.commandRunInherit(
@@ -201,7 +156,7 @@ export default class GitPush extends GitBase {
         console.log(`工作区无更改，已创建空提交: ${this.pathDisplay(targetPath)}`);
         return;
       }
-      throw new Appexit("创建初始提交失败");
+      throw error;
     }
   }
 
@@ -212,40 +167,6 @@ export default class GitPush extends GitBase {
       targetPath,
       "git push",
     );
-  }
-
-  private platformGithubRepoExists(repo: GitRemote, cwd: string): boolean {
-    return this.commandOk(`gh repo view ${this.shellArg(`${repo.owner}/${repo.repo}`)}`, cwd);
-  }
-
-  private platformGithubProjectRepoGet(repoName: string, cwd: string): GitRemote | undefined {
-    const normalizedRepo = this.platformGithubRepositoryNameGet(repoName);
-    const currentRepo = this.platformCurrentGitHubRepoGet(cwd);
-    const owner = currentRepo?.owner ?? this.platformGithubLoginGet(cwd);
-    if (!owner) {
-      return undefined;
-    }
-    return { owner, repo: normalizedRepo };
-  }
-
-  private platformCurrentGitHubRepoGet(cwd: string): GitRemote | undefined {
-    const remote = this.commandReadOptional("git config --get remote.origin.url", cwd);
-    return this.githubRemoteParse(remote);
-  }
-
-  private platformGithubLoginGet(cwd: string): string | undefined {
-    if (this.platformGithubLoginCache) {
-      return this.platformGithubLoginCache;
-    }
-    this.platformGithubLoginCache = this.commandReadOptional("gh api user --jq .login", cwd);
-    return this.platformGithubLoginCache;
-  }
-
-  private platformGithubRepositoryNameGet(repoName: string): string {
-    return repoName
-      .replace(/^@/, "")
-      .replace(/[\\/]+/g, "-")
-      .replace(/[^a-zA-Z0-9._-]+/g, "-");
   }
 
 }

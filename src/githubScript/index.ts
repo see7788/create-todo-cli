@@ -1,14 +1,14 @@
-import ScriptBase, { type ScriptCmds } from "../public/script";
-import GithubPublishYmlInit from "./githubPublishYmlInit";
+import GithubBase from "../github";
+import ScriptBase from "../script";
 
 export default class GithubScript extends ScriptBase {
   public readonly scriptName = "githubScript";
 
-  protected readonly cmds: ScriptCmds = [
+  protected readonly cmds = [
     "githubPublishYmlInit",
   ];
 
   protected async githubPublishYmlInitRun(): Promise<void> {
-    await new GithubPublishYmlInit().createCurrent();
+    await new GithubBase().publishYmlInit();
   }
 }

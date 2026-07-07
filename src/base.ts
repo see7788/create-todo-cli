@@ -119,17 +119,20 @@ export default class LibBase {
     }
 
     /** Run an interactive shell command. */
-    protected runInteractiveCommand(cmd: string, throwOnError: boolean = true): void {
+    protected async runInteractiveCommand(cmd: string, throwOnError: boolean = true): Promise<void> {
         try {
             // 如果是git命令，添加参数禁止LF/CRLF警告
             if (cmd.startsWith('git')) {
                 cmd = cmd.replace('git', 'git -c core.safecrlf=false');
             }
-            execSync(cmd, { stdio: 'inherit', cwd: process.cwd() });
+            await this.commandRunInherit(cmd, process.cwd(), cmd);
         } catch (error: any) {
             if (throwOnError) {
+                if (error instanceof Appexit) {
+                    throw error;
+                }
                 // 交互式命令执行失败是致命错误
-                throw new Appexit("Interactive command failed");
+                throw new Appexit(`command: ${cmd}\nerror: ${this.commandErrorText(error)}`);
             }
             // 非致命错误，静默失败
         }
@@ -273,16 +276,18 @@ export default class LibBase {
         const heartbeat = setInterval(() => {
             const seconds = Math.round((Date.now() - startTime) / 1000);
             console.log(`still running (${seconds}s): ${label}`);
-        }, 15_000);
+        }, 10_000);
 
         try {
             await new Promise<void>((resolve, reject) => {
-                child.once("error", reject);
+                child.once("error", error => {
+                    reject(new Appexit(`command: ${command}\nerror: ${error.message}`));
+                });
                 child.once("close", code => {
                     if (code === 0) {
                         resolve();
                     } else {
-                        reject(new Error(`${label} failed with exit code ${code}`));
+                        reject(new Appexit(`command: ${command}\nexit code: ${code}`));
                     }
                 });
             });
@@ -303,8 +308,8 @@ export default class LibBase {
     protected commandRead(command: string, cwd = process.cwd()): string {
         try {
             return execSync(command, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-        } catch {
-            throw new Appexit(`命令执行失败: ${command}`);
+        } catch (error) {
+            throw new Appexit(`command: ${command}\nerror: ${this.commandErrorText(error)}`);
         }
     }
 
@@ -320,9 +325,19 @@ export default class LibBase {
     protected commandRun(command: string, cwd = process.cwd()): void {
         try {
             execSync(command, { cwd, stdio: "inherit" });
-        } catch {
-            throw new Appexit(`命令执行失败: ${command}`);
+        } catch (error) {
+            throw new Appexit(`command: ${command}\nerror: ${this.commandErrorText(error)}`);
         }
+    }
+
+    private commandErrorText(error: unknown): string {
+        if (error && typeof error === "object") {
+            const stderr = "stderr" in error ? String((error as { stderr?: unknown }).stderr ?? "").trim() : "";
+            if (stderr) {
+                return stderr;
+            }
+        }
+        return error instanceof Error ? error.message : String(error);
     }
 
     protected async askLocalFilePath(fileExtensions: string[] = ['.js', '.jsx', '.ts', '.tsx'], initialPath?: string, shouldConfirm = true, rootPath?: string): Promise<string> {

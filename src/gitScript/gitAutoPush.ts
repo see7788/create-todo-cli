@@ -1,5 +1,5 @@
 import prompts from "prompts";
-import GitBase from "../public/git";
+import GitBase from "../git";
 import GitPush from "./gitPush";
 
 export default class GitAutoPush extends GitBase {

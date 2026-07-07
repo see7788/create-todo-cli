@@ -1,17 +1,19 @@
-import GitBase from "../public/git";
-import ScriptBase, { type ScriptCmds } from "../public/script";
+import ProjectBase from "../project";
+import ScriptBase from "../script";
 import NodePackageBinInit from "./nodePackageBinInit";
 import NodePkgCreate from "./nodePkgCreate";
 import NodePkgDist from "./nodePkgDist";
+import NodePkgFinalize from "./nodePkgFinalize";
 
 export default class NodeScript extends ScriptBase {
   public readonly scriptName = "nodeScript";
 
-  protected readonly cmds: ScriptCmds = [
+  protected readonly cmds = [
     "nodePkgCreate",
     "nodePkgDist",
-    "nodePackageBinInit",
     "nodePackageIdentityInit",
+    "nodePkgFinalize",
+    "nodePackageBinInit",
   ];
 
   protected nodePkgCreateRun(): Promise<void> {
@@ -22,12 +24,16 @@ export default class NodeScript extends ScriptBase {
     return new NodePkgDist().task1();
   }
 
-  protected nodePackageBinInitRun(): Promise<void> {
-    return new NodePackageBinInit().task1();
+  protected async nodePackageIdentityInitRun(): Promise<void> {
+    await new ProjectBase().packageIdentity();
   }
 
-  protected async nodePackageIdentityInitRun(): Promise<void> {
-    await new GitBase().rewriteCurrentPackageIdentity();
+  protected nodePkgFinalizeRun(): Promise<void> {
+    return new NodePkgFinalize().task1();
+  }
+
+  protected nodePackageBinInitRun(): Promise<void> {
+    return new NodePackageBinInit().task1();
   }
 
 }

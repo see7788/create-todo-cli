@@ -1,7 +1,8 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { buildSync } from "esbuild";
-import GitBase, { Appexit } from "../public/git";
+import ProjectBase from "../project";
+import { Appexit } from "../base";
 
 type DistNpmPkgOptions = {
   dist: string;
@@ -44,7 +45,7 @@ type DistTarget = {
   path: string;
 };
 
-class NodePkgDist extends GitBase {
+class NodePkgDist extends ProjectBase {
   private target!: DistTarget;
   private entryIndex = "";
 
@@ -87,7 +88,7 @@ class NodePkgDist extends GitBase {
     console.log(`来源项目: ${result.source}`);
     console.log(`入口文件: ${result.entry}`);
     console.log(`package.json: ${result.packageJson}`);
-    await this.finalizeProjectOutput(result.dist, this.toPackageName(basename(result.dist)));
+    await this.nodePkgFinalize(result.dist, this.toPackageName(basename(result.dist)));
   }
 
   private async bundleDistRun(): Promise<void> {
@@ -106,7 +107,7 @@ class NodePkgDist extends GitBase {
     console.log(`来源项目: ${this.findPackageRoot(this.entryIndex)}`);
     console.log(`入口文件: ${this.entryIndex}`);
     console.log(`package.json: ${result.packageJson}`);
-    await this.finalizeProjectOutput(result.dist, this.toPackageName(basename(result.dist)));
+    await this.nodePkgFinalize(result.dist, this.toPackageName(basename(result.dist)));
   }
 
   private async build({ dist, entryIndex, entryMore = {} }: DistNpmPkgOptions): Promise<DistNpmPkgResult> {
@@ -153,7 +154,7 @@ class NodePkgDist extends GitBase {
     try {
       process.chdir(packageRoot);
       for (const [name, file] of Object.entries(entries)) {
-        this.runInteractiveCommand(
+        await this.runInteractiveCommand(
           [
             "pnpm exec tsup",
             this.shellArg(file),

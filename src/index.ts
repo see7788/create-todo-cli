@@ -7,7 +7,11 @@ import GitScript from "./gitScript/index";
 import GithubScript from "./githubScript/index";
 import NodeScript from "./nodeScript/index";
 import PnpmScript from "./pnpmScript/index";
-import { Appexit } from "./public/base";
+import { Appexit } from "./base";
+
+function errorTextRed(text: string): string {
+  return process.stderr.isTTY ? `\x1b[31m${text}\x1b[0m` : text;
+}
 
 async function run() {
   try {
@@ -28,17 +32,17 @@ async function run() {
     if (scriptCommand) {
       const [scriptName, commandName, commandExtra] = scriptCommand.split("/");
       if (commandExtra) {
-        throw new Error(`命令格式应为 ${scriptName}/<commandName>`);
+        throw new Appexit(`命令格式应为 ${scriptName}/<commandName>`);
       }
       const script = scripts.find(item => item.scriptName === scriptName);
       if (script) {
         if (scriptArgs.length && !commandName) {
-          throw new Error(`命令格式应为 ${script.scriptName}/<commandName>`);
+          throw new Appexit(`命令格式应为 ${script.scriptName}/<commandName>`);
         }
         await script.cmdsRun(commandName ? [commandName, ...scriptArgs] : []);
         return;
       }
-      throw new Error(`未知命令: ${scriptCommand}`);
+      throw new Appexit(`未知命令: ${scriptCommand}`);
     }
 
     const response = await prompts({
@@ -56,12 +60,12 @@ async function run() {
     await response.action();
   } catch (err: unknown) {
     if (err instanceof Appexit) {
-      console.error(`program error: ${err.message}`);
+      console.error(errorTextRed(err.message));
     } else if (err instanceof Error && err.message === "user-cancelled") {
       console.log("cancelled");
       return;
     } else {
-      console.error("program exception:", err instanceof Error ? err.message : err);
+      console.error(errorTextRed(err instanceof Error ? (err.stack ?? err.message) : String(err)));
     }
     process.exit(1);
   }

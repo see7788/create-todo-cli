@@ -1,7 +1,8 @@
-import { execSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import GitBase, { Appexit, type GitRemote } from "../public/git";
+import { Appexit } from "../base";
+import GitBase, { type GitRemote } from "../git";
+import PnpmBase from "../pnpm";
 
 export default class PnpmInsert extends GitBase {
   constructor() {
@@ -9,13 +10,13 @@ export default class PnpmInsert extends GitBase {
   }
 
   public async task1(): Promise<void> {
-    const workspaceRoot = GitBase.pnpmWorkspaceRootFind();
+    const workspaceRoot = PnpmBase.pnpmWorkspaceRootFind();
     if (!workspaceRoot) {
       throw new Appexit("当前目录不在 pnpm workspace 内");
     }
 
     const workspaceFile = join(workspaceRoot, "pnpm-workspace.yaml");
-    const externalSpecs = GitBase.pnpmWorkspacePackagesParse(readFileSync(workspaceFile, "utf-8"))
+    const externalSpecs = PnpmBase.pnpmWorkspacePackagesParse(readFileSync(workspaceFile, "utf-8"))
       .filter(spec => !spec.trim().startsWith("!"))
       .filter(spec => this.workspaceSpecExternalIs(spec));
     if (externalSpecs.length === 0) {
@@ -30,28 +31,24 @@ export default class PnpmInsert extends GitBase {
     }
     await this.targetPathsConfirm(externalSpecs.map(spec => resolve(workspaceRoot, spec)));
     for (const spec of externalSpecs) {
-      this.workspaceExternalInsert(workspaceRoot, spec, sourceRemote);
+      await this.workspaceExternalInsert(workspaceRoot, spec, sourceRemote);
     }
   }
 
-  private workspaceExternalInsert(workspaceRoot: string, spec: string, sourceRemote: GitRemote): void {
+  private async workspaceExternalInsert(workspaceRoot: string, spec: string, sourceRemote: GitRemote): Promise<void> {
     const normalizedSpec = spec.replace(/\\/g, "/").trim();
     const targetPath = resolve(workspaceRoot, normalizedSpec);
     const repoName = basename(targetPath);
     const remoteUrl = `https://github.com/${sourceRemote.owner}/${repoName}.git`;
     if (existsSync(targetPath)) {
-      this.workspaceExternalExistingCheck(targetPath, remoteUrl);
+      await this.workspaceExternalExistingCheck(targetPath, remoteUrl);
       return;
     }
 
-    console.log(`clone ${remoteUrl} -> ${this.pathDisplay(targetPath)}`);
-    execSync(`git clone ${this.shellArg(remoteUrl)} ${this.shellArg(targetPath)}`, {
-      cwd: dirname(targetPath),
-      stdio: "inherit",
-    });
+    await this.workspaceExternalClone(remoteUrl, targetPath);
   }
 
-  private workspaceExternalExistingCheck(targetPath: string, remoteUrl: string): void {
+  private async workspaceExternalExistingCheck(targetPath: string, remoteUrl: string): Promise<void> {
     if (!statSync(targetPath).isDirectory()) {
       throw new Appexit(`外部包目标已存在但不是目录: ${targetPath}`);
     }
@@ -61,14 +58,19 @@ export default class PnpmInsert extends GitBase {
       return;
     }
     if (readdirSync(targetPath).length === 0) {
-      console.log(`clone ${remoteUrl} -> ${this.pathDisplay(targetPath)}`);
-      execSync(`git clone ${this.shellArg(remoteUrl)} ${this.shellArg(targetPath)}`, {
-        cwd: dirname(targetPath),
-        stdio: "inherit",
-      });
+      await this.workspaceExternalClone(remoteUrl, targetPath);
       return;
     }
     throw new Appexit(`外部包目标已存在且非空，为避免覆盖已停止: ${targetPath}`);
+  }
+
+  private async workspaceExternalClone(remoteUrl: string, targetPath: string): Promise<void> {
+    console.log(`clone ${remoteUrl} -> ${this.pathDisplay(targetPath)}`);
+    await this.commandRunInherit(
+      `git clone ${this.shellArg(remoteUrl)} ${this.shellArg(targetPath)}`,
+      dirname(targetPath),
+      `git clone ${basename(targetPath)}`,
+    );
   }
 
   private workspaceExternalGitRepoCheck(targetPath: string, remoteUrl: string): void {
