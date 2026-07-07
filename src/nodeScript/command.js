@@ -13,7 +13,7 @@ const tsxResolve = () => {
   const localTsx = resolve(packageRoot, "node_modules", "tsx", "dist", "cli.mjs");
   if (existsSync(localTsx)) return localTsx;
   try {
-    return require.resolve("tsx/dist/cli.mjs", { paths: [packageRoot] });
+    return require.resolve("tsx/cli", { paths: [packageRoot] });
   } catch {
     return undefined;
   }
